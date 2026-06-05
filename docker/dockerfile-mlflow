@@ -1,0 +1,81 @@
+# =============================================================================
+# dockerfile-mlflow
+# Imagen del servidor MLflow: tracking de experimentos y model registry.
+#
+# Base: python:3.11-slim. Se construye desde cero en lugar de usar una imagen
+# comunitaria de MLflow para tener control total sobre las dependencias y
+# producir una imagen final por debajo de 300 MB.
+#
+# Backend de base de datos: SQLite (fichero local dentro del contenedor).
+# Suficiente para un entorno de desarrollo de un solo usuario. En producción
+# se sustituiría por PostgreSQL, pero añadir esa dependencia aquí añade
+# complejidad sin valor para el TFM.
+#
+# Backend de artefactos: MinIO en local, S3 nativo en AWS. La imagen no
+# conoce el endpoint ni las credenciales: se inyectan desde el compose
+# vía variables de entorno (MLFLOW_S3_ENDPOINT_URL, AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY).
+# =============================================================================
+
+FROM python:3.11-slim
+
+# -----------------------------------------------------------------------------
+# Dependencias del sistema
+# boto3 necesita curl para descargar credenciales en algunos entornos AWS.
+# El resto son dependencias mínimas de compilación que algunos paquetes pip
+# requieren en slim.
+# -----------------------------------------------------------------------------
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        gcc \
+        python3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Dependencias Python
+# mlflow:  servidor de tracking y registry.
+# boto3:   cliente S3/MinIO para el backend de artefactos. MLflow lo usa
+#          internamente cuando el artifact store es una URI s3://.
+# psycopg2-binary: driver PostgreSQL por si en el futuro se migra el backend
+#          de metadatos de SQLite a Postgres sin reconstruir la imagen.
+# -----------------------------------------------------------------------------
+RUN pip install --no-cache-dir \
+        mlflow==2.22.0 \
+        boto3==1.38.0 \
+        psycopg2-binary==2.9.10
+
+# -----------------------------------------------------------------------------
+# Directorio de datos
+# MLflow escribe aquí la base de datos SQLite y los artefactos locales
+# cuando el artifact store es filesystem (no S3). En este proyecto el
+# artifact store es MinIO/S3, así que este directorio solo aloja el
+# fichero mlflow.db. Se monta como volumen Docker para persistir entre
+# reinicios del contenedor.
+# -----------------------------------------------------------------------------
+RUN mkdir -p /mlflow/data
+WORKDIR /mlflow
+
+# Puerto por defecto del servidor MLflow.
+EXPOSE 5000
+
+# -----------------------------------------------------------------------------
+# Comando de arranque
+# --host 0.0.0.0:        escucha en todas las interfaces para ser accesible
+#                        desde otros contenedores y desde el host.
+# --backend-store-uri:   SQLite local para metadatos (runs, métricas, params).
+# --artifacts-destination: bucket MinIO donde se guardan los artefactos
+#                        (modelos, ficheros). El endpoint y las credenciales
+#                        se resuelven desde las variables de entorno
+#                        MLFLOW_S3_ENDPOINT_URL, AWS_ACCESS_KEY_ID y
+#                        AWS_SECRET_ACCESS_KEY inyectadas por el compose.
+# --serve-artifacts:     el servidor actúa como proxy de artefactos, evitando
+#                        que los clientes (Airflow, notebooks) necesiten acceso
+#                        directo a MinIO para descargar modelos.
+# -----------------------------------------------------------------------------
+CMD ["mlflow", "server", \
+     "--host", "0.0.0.0", \
+     "--port", "5000", \
+     "--backend-store-uri", "sqlite:///data/mlflow.db", \
+     "--artifacts-destination", "s3://mlflow/", \
+     "--serve-artifacts"]

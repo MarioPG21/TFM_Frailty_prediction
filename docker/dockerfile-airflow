@@ -1,0 +1,128 @@
+# =============================================================================
+# dockerfile-airflow
+# Imagen de Airflow 3 con las dependencias del pipeline instaladas en tiempo
+# de build, no de runtime.
+#
+# El problema que resuelve este enfoque: la variable _PIP_ADDITIONAL_REQUIREMENTS
+# de Airflow instala paquetes cada vez que arranca el contenedor. Con pyspark
+# (400+ MB) y varios providers, cada arranque tardaba 15-20 minutos y disparaba
+# el consumo de RAM durante la inicialización. Al mover todo al build, el
+# contenedor arranca en segundos.
+#
+# Estructura multi-stage:
+#   Etapa 1 (jars-builder): descarga los JARs de extensión de Spark.
+#   Etapa 2 (final):        imagen de Airflow que copia los JARs desde la
+#                           etapa anterior. No instala Spark: solo necesita
+#                           los JARs para que el cliente Spark (driver) pueda
+#                           conectarse al cluster.
+#
+# Las credenciales de MinIO/S3 y los endpoints NO se hornean en la imagen:
+# se inyectan en tiempo de ejecución desde el compose vía variables de entorno.
+# =============================================================================
+
+
+# =============================================================================
+# ETAPA 1 — Descarga de JARs
+# Imagen ligera usada solo para descargar los JARs. No llega al contenedor
+# final: solo sus artefactos (los JARs) se copian a la etapa siguiente.
+# Usar la misma lista de versiones que dockerfile-spark garantiza que el
+# cliente Spark en Airflow y los executors en el cluster usen exactamente
+# las mismas dependencias.
+# =============================================================================
+FROM python:3.11-slim AS jars-builder
+
+ARG HADOOP_AWS_VER=3.4.0
+ARG AWS_SDK_VER=2.23.19
+ARG DELTA_VERSION=4.0.0
+ARG SCALA_BINARY=2.13
+ARG KAFKA_CLIENTS_VER=3.9.1
+ARG COMMONS_POOL2_VER=2.12.0
+ARG ANTLR4_VER=4.13.1
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /jars
+
+RUN curl -fL -o /jars/hadoop-aws-${HADOOP_AWS_VER}.jar \
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VER}/hadoop-aws-${HADOOP_AWS_VER}.jar"
+
+RUN curl -fL -o /jars/aws-java-sdk-bundle-${AWS_SDK_VER}.jar \
+    "https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/${AWS_SDK_VER}/bundle-${AWS_SDK_VER}.jar"
+
+RUN curl -fL -o /jars/delta-spark_${SCALA_BINARY}-${DELTA_VERSION}.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_BINARY}/${DELTA_VERSION}/delta-spark_${SCALA_BINARY}-${DELTA_VERSION}.jar"
+
+RUN curl -fL -o /jars/delta-storage-${DELTA_VERSION}.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar"
+
+RUN curl -fL -o /jars/antlr4-runtime-${ANTLR4_VER}.jar \
+    "https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/${ANTLR4_VER}/antlr4-runtime-${ANTLR4_VER}.jar"
+
+RUN curl -fL -o /jars/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
+    "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
+
+RUN curl -fL -o /jars/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
+    "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
+
+RUN curl -fL -o /jars/kafka-clients-${KAFKA_CLIENTS_VER}.jar \
+    "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VER}/kafka-clients-${KAFKA_CLIENTS_VER}.jar"
+
+RUN curl -fL -o /jars/commons-pool2-${COMMONS_POOL2_VER}.jar \
+    "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/${COMMONS_POOL2_VER}/commons-pool2-${COMMONS_POOL2_VER}.jar"
+
+
+# =============================================================================
+# ETAPA 2 — Imagen final de Airflow
+# =============================================================================
+FROM apache/airflow:3.0.1
+
+# -----------------------------------------------------------------------------
+# Java — necesario para que el cliente Spark (driver) funcione.
+# Airflow no necesita Java para sí mismo, pero sí para lanzar procesos Spark
+# desde los operadores. Se instala como root y luego se vuelve al usuario
+# airflow para las instalaciones Python.
+# -----------------------------------------------------------------------------
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openjdk-17-jdk-headless && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# Directorio donde Airflow encontrará los JARs al construir el classpath Spark.
+RUN mkdir -p /opt/spark/jars
+
+# Copia los JARs descargados en la etapa anterior.
+# No se instala Spark: solo se necesitan los JARs para el cliente.
+COPY --from=jars-builder /jars /opt/spark/jars
+
+ENV SPARK_EXTRA_CLASSPATH=/opt/spark/jars/*
+
+# -----------------------------------------------------------------------------
+# Dependencias Python — instaladas en build, no en runtime.
+# Esto elimina el uso de _PIP_ADDITIONAL_REQUIREMENTS, que descargaba estos
+# paquetes en cada arranque de cada contenedor Airflow (15-20 min por arranque).
+# -----------------------------------------------------------------------------
+USER airflow
+
+RUN pip install --no-cache-dir \
+        # Cliente PySpark: versión alineada con el cluster Spark del compose.
+        pyspark==4.0.1 \
+        # Delta Lake: necesario para leer/escribir tablas Delta desde los DAGs.
+        delta-spark==4.0.0 \
+        # Provider de Spark: aporta SparkSubmitOperator y SparkJDBCOperator.
+        apache-airflow-providers-apache-spark==4.11.0 \
+        # Provider de Amazon: aporta operadores y hooks para S3/MinIO.
+        apache-airflow-providers-amazon==9.4.0 \
+        # Cliente MLflow: permite registrar experimentos desde los DAGs.
+        mlflow==2.22.0
+
+# Informa a PySpark qué intérprete usar. Debe coincidir con el Python de los
+# executors en dockerfile-spark para evitar errores de serialización.
+ENV PYSPARK_PYTHON=python3.11
+ENV PYSPARK_DRIVER_PYTHON=python3.11

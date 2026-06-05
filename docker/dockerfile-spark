@@ -1,0 +1,122 @@
+# =============================================================================
+# dockerfile-spark
+# Imagen compartida por spark-master, spark-worker-1 y spark-worker-2.
+#
+# Base: imagen oficial de Spark 4.0.1 con Scala 2.13 y Java 21 sobre Ubuntu.
+# Añade: Python 3.11, pyspark, delta-spark y los JARs necesarios para
+# conectarse a MinIO/S3 (S3A), usar Delta Lake y leer de Kafka.
+#
+# Las credenciales de MinIO/S3 y los endpoints NO se crean en la imagen:
+# se inyectan en tiempo de ejecución desde el compose vía variables de entorno.
+# Esto permite reutilizar la misma imagen en local (MinIO) y en AWS (S3 nativo)
+# sin reconstruirla.
+# =============================================================================
+
+FROM spark:4.0.1-scala2.13-java21-ubuntu
+
+# -----------------------------------------------------------------------------
+# Versiones de dependencias — centralizadas aquí para facilitar actualizaciones
+# -----------------------------------------------------------------------------
+ARG HADOOP_AWS_VER=3.4.0
+ARG AWS_SDK_VER=2.23.19
+ARG DELTA_VERSION=4.0.0
+ARG SCALA_BINARY=2.13
+ARG KAFKA_CLIENTS_VER=3.9.1
+ARG COMMONS_POOL2_VER=2.12.0
+ARG ANTLR4_VER=4.13.1
+
+# -----------------------------------------------------------------------------
+# Python 3.11
+# La imagen base de Spark incluye Python 3 del sistema, pero fijamos Python
+# 3.11 explícitamente para garantizar paridad con la imagen de Airflow y evitar
+# que diferencias de versión Python entre driver y executors causen errores en
+# PySpark (el driver corre en Airflow; los executors corren aquí).
+# -----------------------------------------------------------------------------
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        software-properties-common && \
+    add-apt-repository ppa:deadsnakes/ppa && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-distutils \
+        python3.11-venv \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# pip para Python 3.11
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+# Python 3.11 como intérprete por defecto
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    update-alternatives --install /usr/bin/pip    pip    /usr/local/bin/pip3.11 1
+
+# Paquetes Python necesarios en los executors.
+# delta-spark debe coincidir exactamente con el JAR delta-spark descargado abajo.
+RUN pip install --no-cache-dir \
+        pyspark==4.0.1 \
+        delta-spark==${DELTA_VERSION}
+
+# Informa a PySpark qué intérprete usar en driver y executors.
+# Sin esto, PySpark puede resolver 'python3' a versiones distintas en cada lado.
+ENV PYSPARK_PYTHON=python3.11
+ENV PYSPARK_DRIVER_PYTHON=python3.11
+
+# -----------------------------------------------------------------------------
+# JARs de extensión
+# Se descargan en /opt/spark/jars/, que Spark añade al classpath
+# automáticamente al arrancar master y workers.
+#
+# NOTA: hadoop-common NO se descarga aquí. La imagen base de Spark ya incluye
+# su propia versión de hadoop-common en $SPARK_HOME/jars/. Añadir una segunda
+# copia causa conflictos de classloader que se manifiestan como errores
+# crípticos al acceder a S3A. La versión bundled es suficiente.
+# -----------------------------------------------------------------------------
+
+# hadoop-aws: conector S3A para leer y escribir en MinIO/S3.
+# Versión alineada con el hadoop bundled en Spark 4.0.1.
+RUN curl -fL -o /opt/spark/jars/hadoop-aws-${HADOOP_AWS_VER}.jar \
+    "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/${HADOOP_AWS_VER}/hadoop-aws-${HADOOP_AWS_VER}.jar"
+
+# AWS SDK v2 bundle: dependencia de hadoop-aws para autenticación y transporte.
+# Se usa la v2 (software.amazon.awssdk) que es la que requiere hadoop-aws 3.4.x.
+# No mezclar con la v1 (com.amazonaws): causan conflictos de classloader.
+RUN curl -fL -o /opt/spark/jars/aws-java-sdk-bundle-${AWS_SDK_VER}.jar \
+    "https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/${AWS_SDK_VER}/bundle-${AWS_SDK_VER}.jar"
+
+# Delta Lake: formato de tabla transaccional para las capas Medallion.
+# delta-spark es el conector Spark; delta-storage gestiona el log de commits.
+RUN curl -fL -o /opt/spark/jars/delta-spark_${SCALA_BINARY}-${DELTA_VERSION}.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_BINARY}/${DELTA_VERSION}/delta-spark_${SCALA_BINARY}-${DELTA_VERSION}.jar"
+
+RUN curl -fL -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar \
+    "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar"
+
+# antlr4-runtime: parser de SQL que Delta Lake necesita internamente.
+RUN curl -fL -o /opt/spark/jars/antlr4-runtime-${ANTLR4_VER}.jar \
+    "https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/${ANTLR4_VER}/antlr4-runtime-${ANTLR4_VER}.jar"
+
+# Conector Kafka para Spark: permite leer topics de Kafka como DataFrame.
+# Usado en la ingesta batch diaria de la Fuente C (eventos de zancada).
+RUN curl -fL -o /opt/spark/jars/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
+    "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
+
+RUN curl -fL -o /opt/spark/jars/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
+    "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
+
+# kafka-clients: biblioteca cliente Kafka, dependencia del conector Spark-Kafka.
+RUN curl -fL -o /opt/spark/jars/kafka-clients-${KAFKA_CLIENTS_VER}.jar \
+    "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VER}/kafka-clients-${KAFKA_CLIENTS_VER}.jar"
+
+# commons-pool2: pool de conexiones, dependencia del conector Spark-Kafka.
+RUN curl -fL -o /opt/spark/jars/commons-pool2-${COMMONS_POOL2_VER}.jar \
+    "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/${COMMONS_POOL2_VER}/commons-pool2-${COMMONS_POOL2_VER}.jar"
+
+# -----------------------------------------------------------------------------
+# Permisos
+# La imagen base ejecuta Spark como usuario 'spark' (no root).
+# Devolvemos el control a ese usuario para no ejecutar los procesos como root.
+# -----------------------------------------------------------------------------
+USER spark

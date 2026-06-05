@@ -1,0 +1,510 @@
+# =============================================================================
+# docker-compose.yml — TFM_Frailty_prediction
+# Pipeline MLOps para estimación de fragilidad en personas mayores.
+#
+# Servicios permanentes (9):
+#   minio, postgres, spark-master, spark-worker-1, spark-worker-2,
+#   kafka, mlflow, airflow-scheduler, airflow-apiserver
+#
+# Servicios one-shot (2, terminan solos tras inicializar):
+#   minio-init, airflow-init
+#
+# Uso habitual:
+#   Primera vez:   docker compose up minio postgres -d
+#                  docker compose up minio-init
+#                  docker compose up airflow-init
+#                  docker compose up -d
+#   Arranque:      docker compose up -d
+#   Parada:        docker compose down
+#   Reset total:   docker compose down -v
+# =============================================================================
+
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: docker/dockerfile-airflow
+  image: pipeline-airflow
+  environment:
+    &airflow-common-env
+    # Executor: LocalExecutor ejecuta las tareas directamente en el proceso
+    # del scheduler, sin workers externos ni Redis. Suficiente para un
+    # pipeline de un solo usuario y significativamente más ligero que
+    # CeleryExecutor (que requería Redis + workers + Flower adicionales).
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # Integra el dag-processor dentro del scheduler en lugar de levantarlo
+    # como proceso independiente (comportamiento por defecto en Airflow 3).
+    # Elimina un contenedor entero sin perder funcionalidad para este caso
+    # de uso.
+    AIRFLOW__SCHEDULER__STANDALONE_DAG_PROCESSOR: "False"
+
+    # Base de datos de metadatos de Airflow (DAGs, runs, conexiones).
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+
+    # DAGs de ejemplo desactivados: no tienen utilidad en este proyecto y
+    # el dag-processor los parsea continuamente consumiendo CPU.
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+    # URL interna del API server, usada por el scheduler para comunicarse
+    # con él dentro de la red Docker.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-apiserver:8080/execution/"
+
+    # Health check del scheduler habilitado para que Docker pueda verificar
+    # que el proceso está vivo.
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+    # Clave Fernet para cifrar credenciales en la base de datos.
+    # DEBE estar definida en .env antes del primer arranque.
+    AIRFLOW__CORE__FERNET_KEY: "${AIRFLOW_FERNET_KEY}"
+
+    # Airflow 3 usa SimpleAuthManager por defecto (sustituto de FAB).
+    # Los usuarios se definen aquí como pares usuario:rol separados por comas.
+    # Las contraseñas se generan automáticamente y se guardan en el fichero
+    # configurado en AIRFLOW__SIMPLE_AUTH_MANAGER__PASSWORDS_FILE.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "${AIRFLOW_WWW_USER:-airflow}:admin"
+    AIRFLOW__SIMPLE_AUTH_MANAGER__PASSWORDS_FILE: "/opt/airflow/config/simple_auth_manager_passwords.json.generated"
+
+    # Conexión a MinIO como proveedor AWS. Permite usar S3Hook y operadores
+    # Amazon en los DAGs apuntando al MinIO local.
+    AIRFLOW_CONN_AWS_DEFAULT: "aws://${MINIO_ROOT_USER}:${MINIO_ROOT_PASSWORD}@?endpoint_url=http%3A%2F%2Fminio%3A9000"
+
+    # Conexión al cluster Spark. SparkSubmitOperator la usa para localizar
+    # el master y enviarle jobs.
+    AIRFLOW_CONN_SPARK_DEFAULT: "spark://spark-master:7077"
+
+    # Variables de entorno que los scripts Spark necesitan para conectarse
+    # a MinIO. Se propagan a los procesos hijo lanzados por los operadores.
+    AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+    AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+    MLFLOW_TRACKING_URI: "${MLFLOW_TRACKING_URI}"
+    MLFLOW_S3_ENDPOINT_URL: "${MLFLOW_S3_ENDPOINT_URL}"
+    MLFLOW_EXPERIMENT_NAME: "${MLFLOW_EXPERIMENT_NAME}"
+
+    # _PIP_ADDITIONAL_REQUIREMENTS deliberadamente ausente.
+    # En el compose de referencia esta variable instalaba pyspark y providers
+    # en cada arranque de cada contenedor Airflow (15-20 min por arranque).
+    # Todas las dependencias están instaladas en dockerfile-airflow en tiempo
+    # de build: el arranque del contenedor es ahora inmediato.
+
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+    # Scripts Spark montados en lectura: los DAGs los referencian con rutas
+    # absolutas al lanzar spark-submit.
+    - ./spark-apps:/opt/spark-apps:ro
+    - ./synthetic_data:/opt/synthetic_data:ro
+    - ./docker/init_auth.py:/opt/airflow/init_auth.py:ro
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MinIO — data lake S3-compatible
+  # En local actúa como sustituto de S3. El código Spark que lee
+  # s3a://bronze/... funciona igual en local y en AWS porque ambos hablan
+  # la misma API S3. Solo cambia el endpoint, que se inyecta por variable
+  # de entorno.
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
+    ports:
+      - "9000:9000"   # API S3 — usada por Spark, MLflow y Airflow
+      - "9001:9001"   # Consola web de administración
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # minio-init — crea los buckets necesarios al arrancar por primera vez
+  # Contenedor one-shot: ejecuta la tarea y termina. restart: no garantiza
+  # que Docker no lo relance en arranques posteriores.
+  # Buckets creados: bronze, silver, gold (capas Medallion) y mlflow
+  # (backend de artefactos del model registry).
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb -p local/${MINIO_BUCKET_BRONZE} &&
+        mc mb -p local/${MINIO_BUCKET_SILVER} &&
+        mc mb -p local/${MINIO_BUCKET_GOLD} &&
+        mc mb -p local/${MINIO_BUCKET_MLFLOW} &&
+        echo 'Buckets creados correctamente.'
+    restart: "no"
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — metastore de Airflow
+  # Almacena DAGs, runs, conexiones y variables de Airflow.
+  # Se usa postgres:15-alpine (imagen ligera) en lugar de postgres:13 del
+  # original para tener una versión más reciente con menos superficie de ataque.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # Spark master — coordinador del cluster
+  # Gestiona los recursos del cluster y asigna tareas a los workers.
+  # No ejecuta tareas de datos: solo coordina.
+  # ---------------------------------------------------------------------------
+  spark-master:
+    build:
+      context: .
+      dockerfile: docker/dockerfile-spark
+    image: pipeline-spark
+    container_name: spark-master
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_MODE: master
+      SPARK_MASTER_HOST: spark-master
+      SPARK_MASTER_PORT: "7077"
+      SPARK_MASTER_WEBUI_PORT: "8080"
+      # Credenciales S3A inyectadas en runtime, no en la imagen.
+      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
+      SPARK_CONF_spark.hadoop.fs.s3a.access.key: "${AWS_ACCESS_KEY_ID}"
+      SPARK_CONF_spark.hadoop.fs.s3a.secret.key: "${AWS_SECRET_ACCESS_KEY}"
+      SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
+      SPARK_CONF_spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+      SPARK_CONF_spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+    ports:
+      - "8080:8080"   # Spark Master UI
+      - "7077:7077"   # Puerto de conexión del cluster
+    volumes:
+      - ./spark-apps:/opt/spark-apps:ro
+      - ./synthetic_data:/opt/synthetic_data:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # Spark worker 1
+  # ---------------------------------------------------------------------------
+  spark-worker-1:
+    image: pipeline-spark
+    container_name: spark-worker-1
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: "${SPARK_WORKER_MEMORY:-2G}"
+      SPARK_WORKER_CORES: "${SPARK_WORKER_CORES:-2}"
+      SPARK_WORKER_PORT: "8081"
+      SPARK_WORKER_WEBUI_PORT: "8081"
+      PYSPARK_PYTHON: python3.11
+      PYSPARK_DRIVER_PYTHON: python3.11
+      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
+      SPARK_CONF_spark.hadoop.fs.s3a.access.key: "${AWS_ACCESS_KEY_ID}"
+      SPARK_CONF_spark.hadoop.fs.s3a.secret.key: "${AWS_SECRET_ACCESS_KEY}"
+      SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
+      SPARK_CONF_spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+      SPARK_CONF_spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+    ports:
+      - "8081:8081"   # Spark Worker 1 UI
+    volumes:
+      - ./spark-apps:/opt/spark-apps:ro
+      - ./synthetic_data:/opt/synthetic_data:ro
+    # mem_limit: SPARK_WORKER_MEMORY + ~512 MB overhead JVM.
+    # Sin este límite, la JVM del worker puede crecer sin tope en jobs
+    # intensivos y matar el sistema operativo por OOM. Docker termina el
+    # contenedor limpiamente si se supera el límite.
+    mem_limit: 2560m
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # Spark worker 2
+  # Segundo worker requerido para demostrar un pipeline distribuido con más
+  # de un ejecutor. Configuración idéntica al worker 1 salvo el puerto UI.
+  # ---------------------------------------------------------------------------
+  spark-worker-2:
+    image: pipeline-spark
+    container_name: spark-worker-2
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      SPARK_MODE: worker
+      SPARK_MASTER_URL: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: "${SPARK_WORKER_MEMORY:-2G}"
+      SPARK_WORKER_CORES: "${SPARK_WORKER_CORES:-2}"
+      SPARK_WORKER_PORT: "8082"
+      SPARK_WORKER_WEBUI_PORT: "8082"
+      PYSPARK_PYTHON: python3.11
+      PYSPARK_DRIVER_PYTHON: python3.11
+      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
+      SPARK_CONF_spark.hadoop.fs.s3a.access.key: "${AWS_ACCESS_KEY_ID}"
+      SPARK_CONF_spark.hadoop.fs.s3a.secret.key: "${AWS_SECRET_ACCESS_KEY}"
+      SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
+      SPARK_CONF_spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+      SPARK_CONF_spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+    ports:
+      - "8082:8082"   # Spark Worker 2 UI
+    volumes:
+      - ./spark-apps:/opt/spark-apps:ro
+      - ./synthetic_data:/opt/synthetic_data:ro
+    mem_limit: 2560m
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # Kafka — broker de mensajería KRaft (sin ZooKeeper)
+  # Actúa como buffer de ingesta de la Fuente C (eventos de zancada).
+  # Los ficheros JSONL se publican en el topic gait-events; un job Spark
+  # los consume en micro-lotes diarios orquestados por Airflow.
+  #
+  # Decisión de diseño: arquitectura híbrida Kafka + batch.
+  # Se usa Kafka para desacoplar la ingesta del procesamiento, pero el
+  # procesamiento aguas abajo es batch (no Structured Streaming). Esto
+  # aporta el valor genuino de Kafka (durabilidad, desacoplamiento,
+  # extensibilidad) sin la complejidad operativa del streaming continuo,
+  # que no se justifica con datos que llegan quincenalmente.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: kafka
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        # Copia la configuración montada a una ruta editable e inyecta el UUID.
+        cp /tmp/kafka-config/server.properties /tmp/server.properties
+        # Formatea el storage solo si no está ya formateado (arranque idempotente).
+        # Si el volumen persiste entre reinicios, el estado de Kafka se preserva.
+        if [ ! -f /var/lib/kafka/data/meta.properties ]; then
+          /opt/kafka/bin/kafka-storage.sh format -t "$${KAFKA_CLUSTER_UUID}" -c /tmp/server.properties
+        fi
+        exec /opt/kafka/bin/kafka-server-start.sh /tmp/server.properties
+    environment:
+      KAFKA_CLUSTER_UUID: "${KAFKA_CLUSTER_UUID}"
+    ports:
+      - "9094:9094"   # Acceso externo desde el host (clientes fuera de Docker)
+      # Puerto 9092 no se expone al host: es el listener interno entre
+      # contenedores (Spark → Kafka). No necesita ser accesible desde fuera.
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - ./docker/kafka-server.properties:/tmp/kafka-config/server.properties:ro
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh",
+             "--bootstrap-server", "localhost:9092",
+             "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # MLflow — tracking de experimentos y model registry
+  # Los metadatos (runs, métricas, parámetros) se almacenan en SQLite local.
+  # Los artefactos (modelos serializados) se almacenan en MinIO bajo el
+  # bucket 'mlflow'. El flag --serve-artifacts hace que MLflow actúe como
+  # proxy: los clientes descargan modelos a través del servidor MLflow sin
+  # necesitar acceso directo a MinIO.
+  # ---------------------------------------------------------------------------
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/dockerfile-mlflow
+    image: pipeline-mlflow
+    container_name: mlflow
+    environment:
+      # Credenciales para que MLflow pueda escribir artefactos en MinIO.
+      MLFLOW_S3_ENDPOINT_URL: "${MLFLOW_S3_ENDPOINT_URL}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+    ports:
+      - "5000:5000"   # UI y API REST de MLflow
+    volumes:
+      - mlflow-data:/mlflow/data
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # airflow-init — inicialización one-shot
+  # Migra el esquema de la base de datos de Airflow y crea el usuario admin.
+  # Debe completarse antes de que arranquen scheduler y apiserver.
+  # restart: no garantiza que no se relance en arranques posteriores.
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        airflow db migrate
+        python3 /opt/airflow/init_auth.py
+        echo "Inicialización de Airflow completada."
+    environment:
+      <<: *airflow-common-env
+      AIRFLOW_WWW_USER: "${AIRFLOW_WWW_USER:-airflow}"
+      AIRFLOW_WWW_PASSWORD: "${AIRFLOW_WWW_PASSWORD:-airflow}"
+    user: "0:0"
+    restart: "no"
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # airflow-scheduler — núcleo de Airflow
+  # Parsea los DAGs, programa las ejecuciones y lanza las tareas directamente
+  # (LocalExecutor). Con STANDALONE_DAG_PROCESSOR=False, el dag-processor
+  # corre dentro de este mismo proceso, eliminando un contenedor extra.
+  # ---------------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $${HOSTNAME}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      mlflow:
+        condition: service_healthy
+      spark-master:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+  # ---------------------------------------------------------------------------
+  # airflow-apiserver — interfaz web y API REST de Airflow
+  # Expone el panel de control del pipeline en http://localhost:8085.
+  # Se separa del scheduler para que la UI siga disponible aunque el
+  # scheduler esté procesando un job intensivo.
+  # ---------------------------------------------------------------------------
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: airflow-apiserver
+    command: api-server
+    ports:
+      - "8085:8080"   # UI de Airflow accesible en http://localhost:8085
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - pipeline-net
+
+
+# =============================================================================
+# Volúmenes nombrados
+# Persisten los datos entre reinicios del entorno. Se borran solo con
+# 'docker compose down -v' (reset total).
+# =============================================================================
+volumes:
+  minio-data:
+    driver: local
+  postgres-data:
+    driver: local
+  kafka-data:
+    driver: local
+  mlflow-data:
+    driver: local
+
+
+# =============================================================================
+# Red
+# Todos los servicios comparten una red bridge. La comunicación entre
+# contenedores usa los nombres de servicio como hostname.
+# =============================================================================
+networks:
+  pipeline-net:
+    driver: bridge
