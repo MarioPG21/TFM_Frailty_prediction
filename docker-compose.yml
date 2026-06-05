@@ -224,6 +224,7 @@ services:
     volumes:
       - ./spark-apps:/opt/spark-apps:ro
       - ./synthetic_data:/opt/synthetic_data:ro
+      - ./tests:/opt/tests:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080"]
       interval: 15s
