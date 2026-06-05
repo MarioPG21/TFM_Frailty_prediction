@@ -80,6 +80,9 @@ x-airflow-common:
     MLFLOW_TRACKING_URI: "${MLFLOW_TRACKING_URI}"
     MLFLOW_S3_ENDPOINT_URL: "${MLFLOW_S3_ENDPOINT_URL}"
     MLFLOW_EXPERIMENT_NAME: "${MLFLOW_EXPERIMENT_NAME}"
+    KAFKA_BOOTSTRAP: "${KAFKA_BOOTSTRAP}"
+    KAFKA_TOPIC_GAIT: "${KAFKA_TOPIC_GAIT}"
+    MINIO_BUCKET_LANDING: "${MINIO_BUCKET_LANDING}"
 
     # _PIP_ADDITIONAL_REQUIREMENTS deliberadamente ausente.
     # En el compose de referencia esta variable instalaba pyspark y providers
@@ -154,6 +157,7 @@ services:
       - -c
       - |
         mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+        mc mb -p local/${MINIO_BUCKET_LANDING} &&
         mc mb -p local/${MINIO_BUCKET_BRONZE} &&
         mc mb -p local/${MINIO_BUCKET_SILVER} &&
         mc mb -p local/${MINIO_BUCKET_GOLD} &&
