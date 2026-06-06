@@ -8,7 +8,7 @@ import pytest
 from pyspark.sql import functions as F
 
 from pipeline.config import BRONZE, LANDING
-from pipeline.bronze.ingest_clinical import run as run_clinical_bronze
+from pipeline.bronze.ingest_clinical import run as run_clinical_bronze, run_labels as run_labels_bronze
 from pipeline.bronze.ingest_gait import run as run_gait_bronze
 from pipeline.bronze.watermark import read_watermark
 
@@ -113,4 +113,38 @@ class TestBronzeGait:
         n_before = _count(spark, BRONZE.GAIT)
         _bronze_run(spark)
         n_after = _count(spark, BRONZE.GAIT)
+        assert n_before == n_after
+
+
+class TestBronzeLabels:
+    def test_no_duplicates(self, spark):
+        run_labels_bronze(spark)
+        df = spark.read.format("delta").load(BRONZE.LABELS)
+        total = df.count()
+        distinct = df.select("patient_id", "snapshot_date").distinct().count()
+        assert total == distinct, f"Duplicados en bronze_labels: {total} vs {distinct}"
+
+    def test_audit_columns_not_null(self, spark):
+        df = spark.read.format("delta").load(BRONZE.LABELS)
+        nulls = df.filter(
+            F.col("ingestion_timestamp").isNull() | F.col("source_file").isNull()
+        ).count()
+        assert nulls == 0
+
+    def test_watermark_updated(self, spark):
+        wm = read_watermark(spark, "labels")
+        assert wm is not None, "El watermark de labels no fue escrito"
+
+    def test_rows_match_clinical(self, spark):
+        n_labels   = _count(spark, BRONZE.LABELS)
+        n_clinical = _count(spark, BRONZE.CLINICAL)
+        assert n_labels == n_clinical, (
+            f"bronze_labels ({n_labels}) ≠ bronze_clinical ({n_clinical}): "
+            "debe haber un label por cada snapshot clínico"
+        )
+
+    def test_idempotent(self, spark):
+        n_before = _count(spark, BRONZE.LABELS)
+        run_labels_bronze(spark)
+        n_after = _count(spark, BRONZE.LABELS)
         assert n_before == n_after

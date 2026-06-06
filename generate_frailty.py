@@ -187,7 +187,11 @@ _A_FIELDNAMES = [
     "fried_weight_loss", "fried_weakness", "fried_slowness",
     "fried_low_activity", "fried_exhaustion",
     "tug_time_s", "grip_strength_kg", "mmse", "gds",
-    "frailty_index_fi", "frailty_label",
+    "frailty_index_fi",
+]
+
+_LABELS_FIELDNAMES = [
+    "patient_id", "snapshot_date", "label_available_date", "frailty_label",
 ]
 
 
@@ -230,6 +234,10 @@ def _clinical_snapshot(patient, snapshot_date, months_since, prev):
     bmi   = round(weight / (patient["height_cm"] / 100) ** 2, 2)
     fried = {flag: bernoulli(_FRIED_PROBS[flag][label3]) for flag in _FRIED_PROBS}
 
+    # Delay between clinical measurement and confirmed diagnosis (strictly positive)
+    label_delay = random.randint(7, 30)
+    label_available = snapshot_date + timedelta(days=label_delay)
+
     return {
         "patient_id":       patient["patient_id"],
         "snapshot_date":    snapshot_date.isoformat(),
@@ -246,13 +254,17 @@ def _clinical_snapshot(patient, snapshot_date, months_since, prev):
         "mmse":             mmse,
         "gds":              gds,
         "frailty_index_fi": fi,
-        "frailty_label":    0 if label3 < 2 else 1,
+        # Private fields for the labels flow — not written to Source A CSV
+        "_frailty_label":         0 if label3 < 2 else 1,
+        "_label_available_date":  label_available.isoformat(),
     }
 
 
 def generate_source_a(patients, output_dir):
-    base = os.path.join(output_dir, "source_a", "clinical_records")
-    os.makedirs(base, exist_ok=True)
+    base_a = os.path.join(output_dir, "source_a", "clinical_records")
+    base_l = os.path.join(output_dir, "labels")
+    os.makedirs(base_a, exist_ok=True)
+    os.makedirs(base_l, exist_ok=True)
 
     prev = {}  # patient_id → snapshot del mes anterior (para variación continua)
 
@@ -260,9 +272,11 @@ def generate_source_a(patients, output_dir):
         year  = 2024 + mo // 12
         month = mo % 12 + 1
         snapshot_date = date(year, month, 1)
-        fpath = os.path.join(base, f"{year}-{month:02d}.csv")
+        fpath_a = os.path.join(base_a, f"{year}-{month:02d}.csv")
+        fpath_l = os.path.join(base_l, f"{year}-{month:02d}.csv")
 
-        rows = []
+        rows_a = []
+        rows_l = []
         for patient in patients:
             if patient["enrollment_date"] > snapshot_date:
                 continue
@@ -273,14 +287,29 @@ def generate_source_a(patients, output_dir):
             pid = patient["patient_id"]
             rec = _clinical_snapshot(patient, snapshot_date, months_since, prev.get(pid))
             prev[pid] = rec
-            rows.append(rec)
 
-        with open(fpath, "w", newline="", encoding="utf-8") as f:
+            # Source A: strip private fields
+            rows_a.append({k: v for k, v in rec.items() if not k.startswith("_")})
+            # Labels flow: one confirmed diagnosis per (patient, snapshot)
+            rows_l.append({
+                "patient_id":           rec["patient_id"],
+                "snapshot_date":        rec["snapshot_date"],
+                "label_available_date": rec["_label_available_date"],
+                "frailty_label":        rec["_frailty_label"],
+            })
+
+        with open(fpath_a, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=_A_FIELDNAMES)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(rows_a)
 
-        print(f"  Source A: {year}-{month:02d}.csv  ({len(rows):,} registros)")
+        with open(fpath_l, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_LABELS_FIELDNAMES)
+            writer.writeheader()
+            writer.writerows(rows_l)
+
+        print(f"  Source A: {year}-{month:02d}.csv  ({len(rows_a):,} registros)")
+        print(f"  Labels:   {year}-{month:02d}.csv  ({len(rows_l):,} etiquetas)")
 
 
 # =============================================================================
@@ -607,7 +636,7 @@ def run_verifications(patients, output_dir):
     # V1: Distribución binaria (tolerancia ±3 pp): no frágil ~75%, frágil ~25%
     counts  = {0: 0, 1: 0}
     for p in patients:
-        counts[p["frailty_label"]] += 1
+        counts[p["frailty_label"]] += 1   # still on patient dict (internal field)
     targets = {0: 0.75, 1: 0.25}
     nombres = {0: "No frágil", 1: "Frágil"}
     for lbl, target in targets.items():
@@ -631,7 +660,7 @@ def run_verifications(patients, output_dir):
     print(f"  V2 Fuente C volumen: {total_c:,} zancadas  "
           f"(esperado {lo_v2:,}–{hi_v2:,})  [{'OK' if ok else 'FAIL'}]")
 
-    # V3: Sin valores fuera de rango (último CSV de Fuente A)
+    # V3: Sin valores fuera de rango en último CSV de Fuente A (sin frailty_label)
     a_base   = os.path.join(output_dir, "source_a", "clinical_records")
     last_csv = sorted(os.listdir(a_base))[-1]
     range_ok = True
@@ -640,39 +669,63 @@ def run_verifications(patients, output_dir):
               ("frailty_index_fi", 0.0, 0.70), ("age", 65, 95)]
     with open(os.path.join(a_base, last_csv), encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            for col, lo, hi in checks:
-                v = float(row[col])
-                if not (lo <= v <= hi):
-                    range_ok = False
-                    range_fail_msg = f"{col}={v} fuera de [{lo},{hi}]"
+        # Verify frailty_label is NOT present in Source A
+        if "frailty_label" in reader.fieldnames:
+            range_ok = False
+            range_fail_msg = "frailty_label aún presente en Source A"
+        else:
+            for row in reader:
+                for col, lo, hi in checks:
+                    v = float(row[col])
+                    if not (lo <= v <= hi):
+                        range_ok = False
+                        range_fail_msg = f"{col}={v} fuera de [{lo},{hi}]"
+                        break
+                if not range_ok:
                     break
-            if not range_ok:
-                break
     all_ok &= range_ok
     msg = range_fail_msg if not range_ok else ""
-    print(f"  V3 Rangos numéricos ({last_csv}):  [{'OK' if range_ok else 'FAIL ' + msg}]")
+    print(f"  V3 Rangos y esquema Source A ({last_csv}):  [{'OK' if range_ok else 'FAIL ' + msg}]")
 
-    # V4: Correlaciones de Spearman sobre último snapshot (etiqueta binaria)
-    labels, tugs, grips, fis = [], [], [], []
+    # V4: Correlaciones de Spearman — etiqueta de labels, features de Source A (unión por snapshot)
+    l_base    = os.path.join(output_dir, "labels")
+    last_lcsv = sorted(os.listdir(l_base))[-1]
+
+    label_map = {}  # (patient_id, snapshot_date) → frailty_label
+    with open(os.path.join(l_base, last_lcsv), encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            label_map[(row["patient_id"], row["snapshot_date"])] = int(row["frailty_label"])
+
+    # Verify temporal coherence: label_available_date > snapshot_date for every label
+    coherence_ok = True
+    with open(os.path.join(l_base, last_lcsv), encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            if row["label_available_date"] <= row["snapshot_date"]:
+                coherence_ok = False
+                break
+    all_ok &= coherence_ok
+    print(f"  V4a Coherencia temporal labels ({last_lcsv}):  [{'OK' if coherence_ok else 'FAIL'}]")
+
+    frailty_labels, tugs, grips, fis = [], [], [], []
     with open(os.path.join(a_base, last_csv), encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            labels.append(int(row["frailty_label"]))
-            tugs.append(float(row["tug_time_s"]))
-            grips.append(float(row["grip_strength_kg"]))
-            fis.append(float(row["frailty_index_fi"]))
+        for row in csv.DictReader(f):
+            key = (row["patient_id"], row["snapshot_date"])
+            if key in label_map:
+                frailty_labels.append(label_map[key])
+                tugs.append(float(row["tug_time_s"]))
+                grips.append(float(row["grip_strength_kg"]))
+                fis.append(float(row["frailty_index_fi"]))
 
-    r_tug  = _spearman(labels, tugs)
-    r_grip = _spearman(labels, grips)
-    r_fi   = _spearman(labels, fis)
+    r_tug  = _spearman(frailty_labels, tugs)
+    r_grip = _spearman(frailty_labels, grips)
+    r_fi   = _spearman(frailty_labels, fis)
     ok_tug  = r_tug  >  0.40
     ok_grip = r_grip < -0.40
     ok_fi   = r_fi   >  0.50
     all_ok &= ok_tug and ok_grip and ok_fi
-    print(f"  V4 Spearman(label, tug):   {r_tug:+.3f}  (>+0.40)  [{'OK' if ok_tug  else 'FAIL'}]")
-    print(f"  V4 Spearman(label, grip):  {r_grip:+.3f}  (<-0.40)  [{'OK' if ok_grip else 'FAIL'}]")
-    print(f"  V4 Spearman(label, fi):    {r_fi:+.3f}  (>+0.50)  [{'OK' if ok_fi   else 'FAIL'}]")
+    print(f"  V4b Spearman(label, tug):   {r_tug:+.3f}  (>+0.40)  [{'OK' if ok_tug  else 'FAIL'}]")
+    print(f"  V4b Spearman(label, grip):  {r_grip:+.3f}  (<-0.40)  [{'OK' if ok_grip else 'FAIL'}]")
+    print(f"  V4b Spearman(label, fi):    {r_fi:+.3f}  (>+0.50)  [{'OK' if ok_fi   else 'FAIL'}]")
 
     # V5: Integridad referencial (Fuentes B1, B2, C — muestra de primera ola)
     patient_ids = {p["patient_id"] for p in patients}
@@ -721,7 +774,7 @@ def main():
     print(f"  Pacientes con transicion (no fragil -> fragil): {n_trans}")
     print()
 
-    print("Generando Fuente A (registros clínicos, 18 CSV mensuales)...")
+    print("Generando Fuente A (registros clínicos, 18 CSV mensuales) y flujo labels...")
     generate_source_a(patients, OUTPUT_DIR)
     print()
 

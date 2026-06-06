@@ -21,7 +21,6 @@ def run(spark: SparkSession) -> None:
         .withColumn("fried_slowness",     F.col("fried_slowness").cast(IntegerType()))
         .withColumn("fried_low_activity", F.col("fried_low_activity").cast(IntegerType()))
         .withColumn("fried_exhaustion",   F.col("fried_exhaustion").cast(IntegerType()))
-        .withColumn("frailty_label",      F.col("frailty_label").cast(IntegerType()))
     )
 
     rules = get_rules("clinical")

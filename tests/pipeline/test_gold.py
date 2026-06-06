@@ -64,15 +64,35 @@ class TestGoldTraining:
             f"silver_clinical tiene {n_patients_clinical}"
         )
 
-    def test_frailty_label_no_nulls(self, spark):
+    def test_frailty_label_mostly_present(self, spark):
+        """
+        Sólo el primer snapshot por paciente carece de etiqueta confirmada
+        (label_available_date > snapshot_date para ese mes). El resto debe tener label.
+        Se acepta hasta un 10% de nulos.
+        """
         df = spark.read.format("delta").load(GOLD.TRAINING)
+        total = df.count()
         nulls = df.filter(F.col("frailty_label").isNull()).count()
-        assert nulls == 0, f"{nulls} filas con frailty_label nulo"
+        assert nulls / total < 0.10, (
+            f"{nulls} de {total} filas ({nulls/total:.1%}) sin frailty_label — "
+            "supera el 10% esperado para primeros snapshots"
+        )
+
+    def test_no_label_leakage(self, spark):
+        """
+        Para toda fila con etiqueta confirmada, label_available_date <= snapshot_date.
+        Verifica que el as-of join respetó la condición anti-leakage.
+        """
+        df = spark.read.format("delta").load(GOLD.TRAINING)
+        leakage = df.filter(
+            F.col("label_available_date").isNotNull() &
+            (F.col("label_available_date") > F.col("snapshot_date"))
+        ).count()
+        assert leakage == 0, f"{leakage} filas con data leakage de etiqueta"
 
     def test_column_count(self, spark):
         df = spark.read.format("delta").load(GOLD.TRAINING)
-        # silver_clinical (~24 cols) + gait features (13) + sppb (6) + lifestyle (9)
-        # menos columnas de join duplicadas; al menos 40 columnas
+        # clinical (~23 cols) + gait features (13) + sppb (6) + lifestyle (9) + labels (2)
         assert len(df.columns) >= 40, (
             f"gold_training tiene solo {len(df.columns)} columnas"
         )

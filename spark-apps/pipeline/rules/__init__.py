@@ -2,12 +2,14 @@ from .clinical  import get_clinical_rules
 from .sppb      import get_sppb_rules
 from .lifestyle import get_lifestyle_rules
 from .gait      import get_gait_rules
+from .labels    import get_label_rules
 
 _LOADERS = {
     "clinical":  get_clinical_rules,
     "sppb":      get_sppb_rules,
     "lifestyle": get_lifestyle_rules,
     "gait":      get_gait_rules,
+    "labels":    get_label_rules,
 }
 
 VALID_TAGS = frozenset(_LOADERS)
@@ -26,5 +28,6 @@ def get_rules(tag: str) -> dict[str, str]:
         + get_sppb_rules()
         + get_lifestyle_rules()
         + get_gait_rules()
+        + get_label_rules()
     )
     return {r["name"]: r["constraint"] for r in all_rules if r["tag"] == tag}

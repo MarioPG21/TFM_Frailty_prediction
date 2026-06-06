@@ -31,11 +31,13 @@ def run_silver(spark):
     from pipeline.silver.transform_sppb      import run as sppb
     from pipeline.silver.transform_lifestyle import run as lifestyle
     from pipeline.silver.transform_gait      import run as gait
+    from pipeline.silver.transform_labels    import run as labels
     print("=== SILVER ===")
     clinical(spark)
     sppb(spark)
     lifestyle(spark)
     gait(spark)
+    labels(spark)
 
 
 def run_gold(spark):

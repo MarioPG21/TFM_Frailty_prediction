@@ -78,11 +78,6 @@ def get_clinical_rules() -> list[dict]:
          "constraint": "fried_exhaustion IN (0, 1)",
          "tag": "clinical"},
 
-        # Etiqueta de salida
-        {"name": "valid_frailty_label",
-         "constraint": "frailty_label IN (0, 1)",
-         "tag": "clinical"},
-
         # Consistencia: bmi = round(weight / (height/100)², 2)
         # El error máximo de redondeo con 2 decimales es < 0.005, se usa 0.01 de margen.
         {"name": "bmi_consistent",

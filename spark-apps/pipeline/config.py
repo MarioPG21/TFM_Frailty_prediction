@@ -21,6 +21,7 @@ class LANDING:
     CLINICAL   = _s3(_LANDING, "clinical")
     SPPB       = _s3(_LANDING, "sppb")
     LIFESTYLE  = _s3(_LANDING, "lifestyle")
+    LABELS     = _s3(_LANDING, "labels")
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +32,7 @@ class BRONZE:
     SPPB       = _s3(_BRONZE, "sppb")
     LIFESTYLE  = _s3(_BRONZE, "lifestyle")
     GAIT       = _s3(_BRONZE, "gait")
+    LABELS     = _s3(_BRONZE, "labels")
     WATERMARKS = _s3(_BRONZE, "_control", "watermarks")
 
 
@@ -42,10 +44,12 @@ class SILVER:
     SPPB                 = _s3(_SILVER, "sppb")
     LIFESTYLE            = _s3(_SILVER, "lifestyle")
     GAIT                 = _s3(_SILVER, "gait")
+    LABELS               = _s3(_SILVER, "labels")
     QUARANTINE_CLINICAL  = _s3(_SILVER, "quarantine_clinical")
     QUARANTINE_SPPB      = _s3(_SILVER, "quarantine_sppb")
     QUARANTINE_LIFESTYLE = _s3(_SILVER, "quarantine_lifestyle")
     QUARANTINE_GAIT      = _s3(_SILVER, "quarantine_gait")
+    QUARANTINE_LABELS    = _s3(_SILVER, "quarantine_labels")
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +68,7 @@ DEDUP_KEYS: dict[str, list[str]] = {
     "sppb":      ["response_id"],
     "lifestyle": ["response_id"],
     "gait":      ["event_id"],
+    "labels":    ["patient_id", "snapshot_date"],
 }
 
 # ---------------------------------------------------------------------------
@@ -75,6 +80,8 @@ DATE_COLS: dict[str, str] = {
     "sppb":      "survey_date",
     "lifestyle": "survey_date",
     "gait":      "session_timestamp",
+    # Labels use label_available_date: governs when the record "arrives" (anti-leakage)
+    "labels":    "label_available_date",
 }
 
 # ---------------------------------------------------------------------------

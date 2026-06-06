@@ -54,6 +54,7 @@ def run(spark: SparkSession) -> None:
     gait      = spark.read.format("delta").load(GOLD.GAIT_FEATURES)
     sppb      = spark.read.format("delta").load(SILVER.SPPB)
     lifestyle = spark.read.format("delta").load(SILVER.LIFESTYLE)
+    labels    = spark.read.format("delta").load(SILVER.LABELS)
 
     # Columns to carry from each source (excluding keys and audit cols)
     _audit = {"ingestion_timestamp", "source_file", "year", "month"}
@@ -66,6 +67,11 @@ def run(spark: SparkSession) -> None:
 
     lifestyle_cols = [c for c in lifestyle.columns
                       if c not in {"patient_id", "response_id", "survey_date"} | _audit]
+
+    # Labels: carry frailty_label + label_available_date (needed for anti-leakage tests).
+    # snapshot_date from labels is the join key — excluded to avoid collision with clinical.
+    label_cols = [c for c in labels.columns
+                  if c not in {"patient_id", "snapshot_date"} | _audit]
 
     # gait: session_date is already DateType
     training = _asof_join_latest(
@@ -88,6 +94,16 @@ def run(spark: SparkSession) -> None:
         training, lifestyle,
         pid_col="patient_id", base_date="snapshot_date",
         lookup_date="survey_date", feature_cols=lifestyle_cols,
+    )
+
+    # labels: label_available_date is already DateType in Silver.
+    # Anti-leakage condition is embedded in _asof_join_latest:
+    #   label_available_date <= snapshot_date
+    # so only confirmed diagnoses are joined (never a future label).
+    training = _asof_join_latest(
+        training, labels,
+        pid_col="patient_id", base_date="snapshot_date",
+        lookup_date="label_available_date", feature_cols=label_cols,
     )
 
     (

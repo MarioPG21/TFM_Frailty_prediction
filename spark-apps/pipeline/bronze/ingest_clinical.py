@@ -99,10 +99,15 @@ def run_lifestyle(spark: SparkSession) -> None:
     _ingest_batch(spark, "lifestyle", LANDING.LIFESTYLE, BRONZE.LIFESTYLE, "json")
 
 
+def run_labels(spark: SparkSession) -> None:
+    _ingest_batch(spark, "labels", LANDING.LABELS, BRONZE.LABELS, "csv")
+
+
 def run(spark: SparkSession) -> None:
     run_clinical(spark)
     run_sppb(spark)
     run_lifestyle(spark)
+    run_labels(spark)
 
 
 if __name__ == "__main__":
