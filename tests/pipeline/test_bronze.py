@@ -104,10 +104,10 @@ class TestBronzeGait:
         ).count()
         assert nulls == 0
 
-    def test_watermark_has_offset(self, spark):
+    def test_watermark_updated(self, spark):
         wm = read_watermark(spark, "gait")
-        assert wm is not None
-        assert wm.startswith("offset:"), f"Formato de watermark gait inesperado: {wm}"
+        assert wm is not None, "El watermark de gait no fue escrito"
+        assert wm > "2024-01-01", f"Watermark de gait inesperadamente bajo: {wm}"
 
     def test_idempotent(self, spark):
         n_before = _count(spark, BRONZE.GAIT)

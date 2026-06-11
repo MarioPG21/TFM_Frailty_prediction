@@ -2,8 +2,23 @@ from __future__ import annotations
 
 import pyspark.sql.functions as F
 from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from pipeline.config import GOLD, SILVER
+
+
+def _read_or_empty(spark: SparkSession, path: str, pid_col: str, date_col: str) -> DataFrame:
+    """Lee una tabla Delta; si no existe devuelve un DataFrame vacío con esquema mínimo."""
+    try:
+        return spark.read.format("delta").load(path)
+    except Exception as e:
+        if "PATH_NOT_FOUND" in str(e) or "does not exist" in str(e).lower():
+            schema = StructType([
+                StructField(pid_col,  StringType(),    True),
+                StructField(date_col, TimestampType(), True),
+            ])
+            return spark.createDataFrame([], schema)
+        raise
 
 
 def _asof_join_latest(
@@ -52,8 +67,8 @@ def _asof_join_latest(
 def run(spark: SparkSession) -> None:
     clinical  = spark.read.format("delta").load(SILVER.CLINICAL)
     gait      = spark.read.format("delta").load(GOLD.GAIT_FEATURES)
-    sppb      = spark.read.format("delta").load(SILVER.SPPB)
-    lifestyle = spark.read.format("delta").load(SILVER.LIFESTYLE)
+    sppb      = _read_or_empty(spark, SILVER.SPPB,      "patient_id", "survey_date")
+    lifestyle = _read_or_empty(spark, SILVER.LIFESTYLE, "patient_id", "survey_date")
     labels    = spark.read.format("delta").load(SILVER.LABELS)
 
     # Columns to carry from each source (excluding keys and audit cols)

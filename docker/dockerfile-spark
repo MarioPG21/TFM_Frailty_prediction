@@ -4,7 +4,7 @@
 #
 # Base: imagen oficial de Spark 4.0.1 con Scala 2.13 y Java 21 sobre Ubuntu.
 # Añade: Python 3.11, pyspark, delta-spark y los JARs necesarios para
-# conectarse a MinIO/S3 (S3A), usar Delta Lake y leer de Kafka.
+# conectarse a MinIO/S3 (S3A) y usar Delta Lake.
 #
 # Las credenciales de MinIO/S3 y los endpoints NO se crean en la imagen:
 # se inyectan en tiempo de ejecución desde el compose vía variables de entorno.
@@ -21,8 +21,6 @@ ARG HADOOP_AWS_VER=3.4.0
 ARG AWS_SDK_VER=2.23.19
 ARG DELTA_VERSION=4.0.0
 ARG SCALA_BINARY=2.13
-ARG KAFKA_CLIENTS_VER=3.9.1
-ARG COMMONS_POOL2_VER=2.12.0
 ARG ANTLR4_VER=4.13.1
 
 # -----------------------------------------------------------------------------
@@ -97,22 +95,6 @@ RUN curl -fL -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar \
 # antlr4-runtime: parser de SQL que Delta Lake necesita internamente.
 RUN curl -fL -o /opt/spark/jars/antlr4-runtime-${ANTLR4_VER}.jar \
     "https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/${ANTLR4_VER}/antlr4-runtime-${ANTLR4_VER}.jar"
-
-# Conector Kafka para Spark: permite leer topics de Kafka como DataFrame.
-# Usado en la ingesta batch diaria de la Fuente C (eventos de zancada).
-RUN curl -fL -o /opt/spark/jars/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
-    "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
-
-RUN curl -fL -o /opt/spark/jars/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
-    "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
-
-# kafka-clients: biblioteca cliente Kafka, dependencia del conector Spark-Kafka.
-RUN curl -fL -o /opt/spark/jars/kafka-clients-${KAFKA_CLIENTS_VER}.jar \
-    "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VER}/kafka-clients-${KAFKA_CLIENTS_VER}.jar"
-
-# commons-pool2: pool de conexiones, dependencia del conector Spark-Kafka.
-RUN curl -fL -o /opt/spark/jars/commons-pool2-${COMMONS_POOL2_VER}.jar \
-    "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/${COMMONS_POOL2_VER}/commons-pool2-${COMMONS_POOL2_VER}.jar"
 
 # -----------------------------------------------------------------------------
 # Permisos

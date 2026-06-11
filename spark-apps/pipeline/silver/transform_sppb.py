@@ -10,7 +10,13 @@ from pipeline.silver.quarantine import apply_rules_and_split
 
 
 def run(spark: SparkSession) -> None:
-    df = spark.read.format("delta").load(BRONZE.SPPB)
+    try:
+        df = spark.read.format("delta").load(BRONZE.SPPB)
+    except Exception as e:
+        if "PATH_NOT_FOUND" in str(e) or "does not exist" in str(e).lower():
+            print(f"[sppb] Silver: sin datos en bronze todavía, omitiendo")
+            return
+        raise
 
     df = (
         df

@@ -1,23 +1,20 @@
 #!/usr/bin/env python3
 """
-Publica eventos de marcha de la Fuente C (JSONL) al topic Kafka gait-events.
+Publica los ficheros de telemetría de marcha (Fuente C, JSONL) al bucket landing de MinIO.
 
-La posición actual se persiste en .gait_state.json junto al script para que
---ticks 1 avance de donde se quedó la última vez.
-
-Uso:
+Uso (desde la raíz del proyecto):
     python spark-apps/scripts/publish_gait.py --ticks 1
-    python spark-apps/scripts/publish_gait.py --ticks all --delay 0
+    python spark-apps/scripts/publish_gait.py --ticks all
 """
 import argparse
-import json
 import os
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
-from kafka import KafkaProducer
-from kafka.errors import NoBrokersAvailable
+import boto3
+from botocore.exceptions import ClientError
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent.parent
@@ -26,74 +23,79 @@ _SYNTHETIC = Path(os.getenv("SYNTHETIC_DATA_PATH",
 if not _SYNTHETIC.exists():
     _SYNTHETIC = Path("/opt/synthetic_data")
 
-_STATE_FILE = _SCRIPT_DIR / ".gait_state.json"
+
+def _s3():
+    return boto3.client(
+        "s3",
+        endpoint_url=os.getenv("MINIO_ENDPOINT", "http://localhost:9000"),
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin123"),
+    )
 
 
-def _load_state() -> dict:
-    if _STATE_FILE.exists():
-        return json.loads(_STATE_FILE.read_text())
-    return {"next_tick": 0}
-
-
-def _save_state(state: dict) -> None:
-    _STATE_FILE.write_text(json.dumps(state))
+def _exists(client, bucket, key):
+    try:
+        client.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError:
+        return False
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Publica Fuente C a Kafka")
-    parser.add_argument("--ticks", default="1", help="Número de meses o 'all'")
+    parser = argparse.ArgumentParser(description="Publica Fuente C (gait) a MinIO landing")
+    parser.add_argument("--ticks", default="1", help="Número de periodos o 'all'")
     parser.add_argument("--delay", type=float, default=0, help="Segundos entre ticks")
+    parser.add_argument("--day", default=None,
+                        help="Día simulado YYYY-MM-DD: sube el mes que contiene ese día (idempotente)")
     args = parser.parse_args()
 
-    bootstrap = os.getenv("KAFKA_BOOTSTRAP", "localhost:9094")
-    topic     = os.getenv("KAFKA_TOPIC_GAIT", "gait-events")
-
+    bucket = os.getenv("MINIO_BUCKET_LANDING", "landing")
     source_dir = _SYNTHETIC / "source_c" / "gait_events"
-    all_files  = sorted(source_dir.glob("*.jsonl"))
+    all_files = sorted(source_dir.glob("*.jsonl"))
 
     if not all_files:
         print(f"ERROR: No hay ficheros JSONL en {source_dir}", file=sys.stderr)
         sys.exit(1)
 
-    state   = _load_state()
-    current = state["next_tick"]
+    client = _s3()
 
-    n_ticks = len(all_files) - current if args.ticks == "all" else int(args.ticks)
-
-    if n_ticks <= 0 or current >= len(all_files):
-        print("Nada nuevo que publicar (todos los meses ya fueron enviados).")
+    if args.day:
+        d = date.fromisoformat(args.day)
+        stem = f"{d.year:04d}-{d.month:02d}"
+        matches = [f for f in all_files if f.stem == stem]
+        if not matches:
+            print(f"[{stem}] gait → sin datos para este mes")
+            return
+        fpath = matches[0]
+        key = f"gait/{d.year:04d}/{d.month:02d}/{fpath.name}"
+        if _exists(client, bucket, key):
+            print(f"[{stem}] gait → ya publicado, omitiendo")
+            return
+        n_rows = sum(1 for _ in open(fpath, encoding="utf-8"))
+        client.upload_file(str(fpath), bucket, key)
+        print(f"[{stem}] gait → s3://{bucket}/{key}  ({n_rows:,} eventos)")
         return
 
-    try:
-        producer = KafkaProducer(
-            bootstrap_servers=bootstrap,
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        )
-    except NoBrokersAvailable:
-        print(f"ERROR: No se puede conectar a Kafka en {bootstrap}", file=sys.stderr)
-        sys.exit(1)
+    pending = []
+    for fpath in all_files:
+        year, month = fpath.stem.split("-")
+        key = f"gait/{year}/{month}/{fpath.name}"
+        if not _exists(client, bucket, key):
+            pending.append((fpath, key))
 
-    published = 0
-    for i in range(n_ticks):
-        idx = current + i
-        if idx >= len(all_files):
-            break
-        fpath = all_files[idx]
-        count = 0
-        with open(fpath, encoding="utf-8") as f:
-            for line in f:
-                producer.send(topic, json.loads(line))
-                count += 1
-        producer.flush()
-        print(f"[{fpath.stem}] gait → {topic}  ({count:,} eventos)")
-        published += 1
-        if args.delay > 0 and i < n_ticks - 1:
+    to_publish = pending if args.ticks == "all" else pending[:int(args.ticks)]
+
+    if not to_publish:
+        print("Nada nuevo que publicar (todos los periodos ya están en landing).")
+        return
+
+    for i, (fpath, key) in enumerate(to_publish):
+        n_rows = sum(1 for _ in open(fpath, encoding="utf-8"))
+        client.upload_file(str(fpath), bucket, key)
+        print(f"[{fpath.stem}] gait → s3://{bucket}/{key}  ({n_rows:,} eventos)")
+        if args.delay > 0 and i < len(to_publish) - 1:
             print(f"Esperando {args.delay:.0f} segundos antes del siguiente tick...")
             time.sleep(args.delay)
-
-    producer.close()
-    state["next_tick"] = current + published
-    _save_state(state)
 
 
 if __name__ == "__main__":

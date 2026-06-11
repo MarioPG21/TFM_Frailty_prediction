@@ -8,8 +8,8 @@ def get_spark(app_name: str = "frailty-pipeline", driver_memory: str | None = No
     - S3A (MinIO en local, S3 nativo en AWS): credenciales y endpoint desde env.
     - Delta Lake 4.0: extensión SQL y catálogo registrados.
 
-    Los JARs necesarios (hadoop-aws, delta-spark, kafka-connector, etc.) ya
-    están en /opt/spark/jars/ de la imagen Docker, por lo que no es necesario
+    Los JARs necesarios (hadoop-aws, delta-spark, etc.) ya están en
+    /opt/spark/jars/ de la imagen Docker, por lo que no es necesario
     pasar spark.jars.packages.
     """
     # Airflow containers expose AWS_ACCESS_KEY_ID; spark-master only has SPARK_CONF_* vars.

@@ -10,6 +10,7 @@ import argparse
 import os
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import boto3
@@ -44,6 +45,8 @@ def main():
     parser = argparse.ArgumentParser(description="Publica Fuente B1 a MinIO landing")
     parser.add_argument("--ticks", default="1", help="Número de oleadas o 'all'")
     parser.add_argument("--delay", type=float, default=0, help="Segundos entre ticks")
+    parser.add_argument("--day", default=None,
+                        help="Día simulado YYYY-MM-DD: sube el mes que contiene ese día (idempotente)")
     args = parser.parse_args()
 
     bucket = os.getenv("MINIO_BUCKET_LANDING", "landing")
@@ -55,6 +58,23 @@ def main():
         sys.exit(1)
 
     client = _s3()
+
+    if args.day:
+        d = date.fromisoformat(args.day)
+        stem = f"{d.year:04d}-{d.month:02d}"
+        matches = [f for f in all_files if f.stem == stem]
+        if not matches:
+            print(f"[{stem}] sppb → sin datos para este mes")
+            return
+        fpath = matches[0]
+        key = f"sppb/{d.year:04d}/{d.month:02d}/{fpath.name}"
+        if _exists(client, bucket, key):
+            print(f"[{stem}] sppb → ya publicado, omitiendo")
+            return
+        n_rows = sum(1 for _ in open(fpath, encoding="utf-8"))
+        client.upload_file(str(fpath), bucket, key)
+        print(f"[{stem}] sppb → s3://{bucket}/{key}  ({n_rows:,} registros)")
+        return
 
     pending = []
     for fpath in all_files:

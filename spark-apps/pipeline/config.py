@@ -21,6 +21,7 @@ class LANDING:
     CLINICAL   = _s3(_LANDING, "clinical")
     SPPB       = _s3(_LANDING, "sppb")
     LIFESTYLE  = _s3(_LANDING, "lifestyle")
+    GAIT       = _s3(_LANDING, "gait")
     LABELS     = _s3(_LANDING, "labels")
 
 
@@ -83,12 +84,6 @@ DATE_COLS: dict[str, str] = {
     # Labels use label_available_date: governs when the record "arrives" (anti-leakage)
     "labels":    "label_available_date",
 }
-
-# ---------------------------------------------------------------------------
-# Kafka
-# ---------------------------------------------------------------------------
-KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:9092")
-KAFKA_TOPIC_GAIT = os.getenv("KAFKA_TOPIC_GAIT", "gait-events")
 
 # ---------------------------------------------------------------------------
 # Datos sintéticos — ruta base dentro de los contenedores

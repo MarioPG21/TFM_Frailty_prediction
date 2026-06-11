@@ -35,8 +35,6 @@ ARG HADOOP_AWS_VER=3.4.0
 ARG AWS_SDK_VER=2.23.19
 ARG DELTA_VERSION=4.0.0
 ARG SCALA_BINARY=2.13
-ARG KAFKA_CLIENTS_VER=3.9.1
-ARG COMMONS_POOL2_VER=2.12.0
 ARG ANTLR4_VER=4.13.1
 
 RUN apt-get update && \
@@ -60,17 +58,6 @@ RUN curl -fL -o /jars/delta-storage-${DELTA_VERSION}.jar \
 RUN curl -fL -o /jars/antlr4-runtime-${ANTLR4_VER}.jar \
     "https://repo1.maven.org/maven2/org/antlr/antlr4-runtime/${ANTLR4_VER}/antlr4-runtime-${ANTLR4_VER}.jar"
 
-RUN curl -fL -o /jars/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
-    "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-sql-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
-
-RUN curl -fL -o /jars/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar \
-    "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_BINARY}/4.0.1/spark-token-provider-kafka-0-10_${SCALA_BINARY}-4.0.1.jar"
-
-RUN curl -fL -o /jars/kafka-clients-${KAFKA_CLIENTS_VER}.jar \
-    "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/${KAFKA_CLIENTS_VER}/kafka-clients-${KAFKA_CLIENTS_VER}.jar"
-
-RUN curl -fL -o /jars/commons-pool2-${COMMONS_POOL2_VER}.jar \
-    "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/${COMMONS_POOL2_VER}/commons-pool2-${COMMONS_POOL2_VER}.jar"
 
 
 # =============================================================================
@@ -102,6 +89,22 @@ RUN mkdir -p /opt/spark/jars
 COPY --from=jars-builder /jars /opt/spark/jars
 
 ENV SPARK_EXTRA_CLASSPATH=/opt/spark/jars/*
+
+# -----------------------------------------------------------------------------
+# Python 3.11 driver packages
+# The Spark executor Python is 3.11 (set in dockerfile-spark). PySpark requires
+# the driver and executors to use the same Python minor version. This block
+# installs pyspark and delta-spark for python3.11 so the Airflow driver
+# (PYSPARK_DRIVER_PYTHON=python3.11) can import them.
+# Using --target keeps these isolated from the python3.12 airflow environment.
+# -----------------------------------------------------------------------------
+RUN mkdir -p /opt/py311-packages && \
+    curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && \
+    python3.11 /tmp/get-pip.py --target=/opt/py311-packages && \
+    PYTHONPATH=/opt/py311-packages python3.11 /opt/py311-packages/pip \
+        install --target=/opt/py311-packages --no-cache-dir \
+        "pyspark==4.0.1" "delta-spark==4.0.0" && \
+    rm /tmp/get-pip.py
 
 # -----------------------------------------------------------------------------
 # Dependencias Python — instaladas en build, no en runtime.
