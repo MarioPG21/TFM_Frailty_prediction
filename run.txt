@@ -1,0 +1,7 @@
+docker compose exec airflow-scheduler bash -c "
+  python3 /opt/spark-apps/scripts/publish_clinical.py  --ticks all
+  python3 /opt/spark-apps/scripts/publish_gait.py      --ticks all
+  python3 /opt/spark-apps/scripts/publish_labels.py    --ticks all
+  python3 /opt/spark-apps/scripts/publish_sppb.py      --ticks all
+  python3 /opt/spark-apps/scripts/publish_lifestyle.py --ticks all
+"

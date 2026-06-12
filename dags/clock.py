@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowSkipException
 from airflow.models import Variable
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 
 COHORT_START = date(2024, 1, 1)
 COHORT_END   = date(2025, 6, 30)
@@ -96,8 +96,7 @@ def clock_dag():
     trigger_pipeline = TriggerDagRunOperator(
         task_id="trigger_pipeline",
         trigger_dag_id="pipeline",
-        wait_for_completion=True,
-        poke_interval=30,
+        wait_for_completion=False,
     )
 
     next_day = advance_clock()

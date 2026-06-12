@@ -45,6 +45,10 @@ x-airflow-common:
     # DAGs de ejemplo desactivados: no tienen utilidad en este proyecto y
     # el dag-processor los parsea continuamente consumiendo CPU.
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # Los DAGs nuevos arrancan activos (no pausados). Sin esta variable
+    # cada DAG recién detectado aparece pausado y no ejecuta nada hasta
+    # que el operador lo despausa manualmente desde la UI.
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
 
     # URL interna del API server, usada por el scheduler para comunicarse
     # con él dentro de la red Docker.
@@ -53,6 +57,9 @@ x-airflow-common:
     # Health check del scheduler habilitado para que Docker pueda verificar
     # que el proceso está vivo.
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Reescanear el directorio dags/ cada 30 s (por defecto 300 s).
+    # En Airflow 3 la clave se movió a la sección dag_processor.
+    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
 
     # Clave Fernet para cifrar credenciales en la base de datos.
     # DEBE estar definida en .env antes del primer arranque.
@@ -80,7 +87,9 @@ x-airflow-common:
     # La clave de config es [core] simple_auth_manager_passwords_file (sección
     # "core", no "simple_auth_manager") — env var: AIRFLOW__CORE__SIMPLE_AUTH...
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "${AIRFLOW_WWW_USER:-airflow}:admin"
-    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/simple_auth_manager_passwords.json.generated"
+    # El fichero vive en config/ (volumen montado ./config) para que sea
+    # compartido y persistente entre todos los contenedores Airflow.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: "/opt/airflow/config/passwords.json"
 
     # Conexión a MinIO como proveedor AWS. Permite usar S3Hook y operadores
     # Amazon en los DAGs apuntando al MinIO local.
@@ -98,9 +107,12 @@ x-airflow-common:
     # a MinIO. Se propagan a los procesos hijo lanzados por los operadores.
     AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
     AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
-    MINIO_ENDPOINT: "${MINIO_ENDPOINT}"
+    # Endpoint interno Docker: los procesos Spark corren dentro de los contenedores
+    # y deben usar el nombre de servicio "minio", no "localhost" (que sería el
+    # propio contenedor). El .env puede tener localhost:9000 para scripts del host.
+    MINIO_ENDPOINT: "http://minio:9000"
     MLFLOW_TRACKING_URI: "${MLFLOW_TRACKING_URI}"
-    MLFLOW_S3_ENDPOINT_URL: "${MLFLOW_S3_ENDPOINT_URL}"
+    MLFLOW_S3_ENDPOINT_URL: "http://minio:9000"
     MLFLOW_EXPERIMENT_NAME: "${MLFLOW_EXPERIMENT_NAME}"
     MINIO_BUCKET_LANDING: "${MINIO_BUCKET_LANDING}"
 
@@ -232,7 +244,7 @@ services:
       SPARK_MASTER_PORT: "7077"
       SPARK_MASTER_WEBUI_PORT: "8080"
       # Credenciales S3A inyectadas en runtime, no en la imagen.
-      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
+      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "http://minio:9000"
       SPARK_CONF_spark.hadoop.fs.s3a.access.key: "${AWS_ACCESS_KEY_ID}"
       SPARK_CONF_spark.hadoop.fs.s3a.secret.key: "${AWS_SECRET_ACCESS_KEY}"
       SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
@@ -272,7 +284,7 @@ services:
       SPARK_WORKER_WEBUI_PORT: "8081"
       PYSPARK_PYTHON: python3.11
       PYSPARK_DRIVER_PYTHON: python3.11
-      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
+      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "http://minio:9000"
       SPARK_CONF_spark.hadoop.fs.s3a.access.key: "${AWS_ACCESS_KEY_ID}"
       SPARK_CONF_spark.hadoop.fs.s3a.secret.key: "${AWS_SECRET_ACCESS_KEY}"
       SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
@@ -314,7 +326,7 @@ services:
       SPARK_WORKER_WEBUI_PORT: "8082"
       PYSPARK_PYTHON: python3.11
       PYSPARK_DRIVER_PYTHON: python3.11
-      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
+      SPARK_CONF_spark.hadoop.fs.s3a.endpoint: "http://minio:9000"
       SPARK_CONF_spark.hadoop.fs.s3a.access.key: "${AWS_ACCESS_KEY_ID}"
       SPARK_CONF_spark.hadoop.fs.s3a.secret.key: "${AWS_SECRET_ACCESS_KEY}"
       SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
@@ -387,6 +399,7 @@ services:
         mkdir -p /opt/airflow/{logs,dags,plugins,config}
         airflow db migrate
         python3 /opt/airflow/init_auth.py
+        airflow dags reserialize
         echo "Inicialización de Airflow completada."
     environment:
       <<: *airflow-common-env
