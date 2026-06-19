@@ -123,7 +123,12 @@ RUN pip install --no-cache-dir \
         # Provider de Amazon: aporta operadores y hooks para S3/MinIO.
         apache-airflow-providers-amazon==9.4.0 \
         # Cliente MLflow: permite registrar experimentos desde los DAGs.
-        mlflow==2.22.0
+        mlflow==2.22.0 \
+        # Lectura de tablas Delta Lake desde Python puro (sin Spark).
+        # Usado por el script de entrenamiento para cargar la tabla Gold.
+        deltalake==0.25.4 \
+        # scikit-learn fijado explícitamente para el script de entrenamiento.
+        scikit-learn==1.6.1
 
 # Informa a PySpark qué intérprete usar. Debe coincidir con el Python de los
 # executors en dockerfile-spark para evitar errores de serialización.

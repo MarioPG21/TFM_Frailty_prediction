@@ -6,12 +6,14 @@ from pyspark.sql import functions as F
 
 from pipeline.config import GOLD, SILVER
 from pipeline.gold.gait_features  import run as run_gait_features
+from pipeline.gold.reassembler    import run as run_reassembler
 from pipeline.gold.training_table import run as run_training
 
 
 def _run_gold(spark):
     run_gait_features(spark)
     run_training(spark)
+    run_reassembler(spark)
 
 
 def _count(spark, path):
@@ -66,29 +68,33 @@ class TestGoldTraining:
 
     def test_frailty_label_mostly_present(self, spark):
         """
-        Sólo el primer snapshot por paciente carece de etiqueta confirmada
-        (label_available_date > snapshot_date para ese mes). El resto debe tener label.
-        Se acepta hasta un 10% de nulos.
+        Pacientes evaluados recientemente pueden no tener label aún
+        (label_available_date = evaluation_date + 7-30 días). Se acepta hasta
+        un 15% de nulos, correspondiente a pacientes en los últimos 30 días.
         """
         df = spark.read.format("delta").load(GOLD.TRAINING)
         total = df.count()
         nulls = df.filter(F.col("frailty_label").isNull()).count()
-        assert nulls / total < 0.10, (
+        assert nulls / total < 0.15, (
             f"{nulls} de {total} filas ({nulls/total:.1%}) sin frailty_label — "
-            "supera el 10% esperado para primeros snapshots"
+            "supera el 15% esperado para evaluaciones recientes sin label aún"
         )
 
     def test_no_label_leakage(self, spark):
         """
-        Para toda fila con etiqueta confirmada, label_available_date <= snapshot_date.
-        Verifica que el as-of join respetó la condición anti-leakage.
+        En el nuevo paradigma, la etiqueta siempre llega DESPUÉS de la evaluación
+        (label_available_date > snapshot_date). Verifica que el filtro anti-leakage
+        de training_table.py excluyó cualquier etiqueta con fecha anterior o igual
+        a la evaluación (que indicaría data leakage).
         """
         df = spark.read.format("delta").load(GOLD.TRAINING)
         leakage = df.filter(
             F.col("label_available_date").isNotNull() &
-            (F.col("label_available_date") > F.col("snapshot_date"))
+            (F.col("label_available_date") <= F.col("snapshot_date"))
         ).count()
-        assert leakage == 0, f"{leakage} filas con data leakage de etiqueta"
+        assert leakage == 0, (
+            f"{leakage} filas donde el label llegó ANTES o EN la evaluación (data leakage)"
+        )
 
     def test_column_count(self, spark):
         df = spark.read.format("delta").load(GOLD.TRAINING)
@@ -103,3 +109,23 @@ class TestGoldTraining:
         assert n_training == n_clinical, (
             f"gold_training ({n_training}) ≠ silver_clinical ({n_clinical})"
         )
+
+
+class TestGoldAssembled:
+    def test_no_null_features(self, spark):
+        """
+        Todo paciente ensamblado tiene las 4 fuentes completas: no debe
+        haber nulls en columnas de gait, sppb ni lifestyle.
+        """
+        _run_gold(spark)
+        df = spark.read.format("delta").load(GOLD.ASSEMBLED)
+        for col in ("gait_velocity_ms", "sppb_total", "sedentary_hours_day"):
+            nulls = df.filter(F.col(col).isNull()).count()
+            assert nulls == 0, f"Columna {col} tiene nulls en Gold.ASSEMBLED"
+
+    def test_one_row_per_patient(self, spark):
+        """Un paciente ensamblado aparece exactamente una vez."""
+        df = spark.read.format("delta").load(GOLD.ASSEMBLED)
+        total    = df.count()
+        distinct = df.select("patient_id").distinct().count()
+        assert total == distinct, "Gold.ASSEMBLED tiene pacientes duplicados"

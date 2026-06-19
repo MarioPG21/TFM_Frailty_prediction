@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pyspark.sql.functions as F
-from pyspark.sql import DataFrame, SparkSession, Window
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import StringType, StructField, StructType, TimestampType
 
 from pipeline.config import GOLD, SILVER
@@ -21,58 +21,25 @@ def _read_or_empty(spark: SparkSession, path: str, pid_col: str, date_col: str) 
         raise
 
 
-def _asof_join_latest(
-    base: DataFrame,
-    lookup: DataFrame,
-    pid_col: str,
-    base_date: str,
-    lookup_date: str,
-    feature_cols: list[str],
-) -> DataFrame:
-    """
-    Left-join base with the most recent lookup record (by lookup_date)
-    that is on or before base_date, per patient.
-
-    feature_cols: columns from lookup to include in the result (excluding pid_col
-    and lookup_date which are only used for joining/ordering).
-    """
-    # Prefix lookup_date to avoid name collisions after join
-    lk = lookup.select(
-        F.col(pid_col).alias("_lk_pid"),
-        F.col(lookup_date).alias("_lk_date"),
-        *[F.col(c) for c in feature_cols],
-    )
-
-    joined = (
-        base
-        .join(
-            lk,
-            (base[pid_col] == lk["_lk_pid"]) &
-            (lk["_lk_date"] <= base[base_date]),
-            "left",
-        )
-        .drop("_lk_pid")
-    )
-
-    w = Window.partitionBy(pid_col, base_date).orderBy(F.desc("_lk_date"))
-
-    return (
-        joined
-        .withColumn("_rn", F.row_number().over(w))
-        .filter(F.col("_rn") == 1)
-        .drop("_rn", "_lk_date")
-    )
-
-
 def run(spark: SparkSession) -> None:
-    clinical  = spark.read.format("delta").load(SILVER.CLINICAL)
-    gait      = spark.read.format("delta").load(GOLD.GAIT_FEATURES)
-    sppb      = _read_or_empty(spark, SILVER.SPPB,      "patient_id", "survey_date")
-    lifestyle = _read_or_empty(spark, SILVER.LIFESTYLE, "patient_id", "survey_date")
-    labels    = spark.read.format("delta").load(SILVER.LABELS)
+    # Clinical es la base del join; sin ella no hay nada que ensamblar.
+    try:
+        clinical = spark.read.format("delta").load(SILVER.CLINICAL)
+    except Exception as e:
+        if "PATH_NOT_FOUND" in str(e) or "does not exist" in str(e).lower():
+            print("[gold_training] Silver.CLINICAL sin datos todavía, omitiendo.")
+            return
+        raise
 
-    # Columns to carry from each source (excluding keys and audit cols)
-    _audit = {"ingestion_timestamp", "source_file", "year", "month"}
+    gait      = _read_or_empty(spark, GOLD.GAIT_FEATURES, "patient_id", "session_date")
+    sppb      = _read_or_empty(spark, SILVER.SPPB,        "patient_id", "survey_date")
+    lifestyle = _read_or_empty(spark, SILVER.LIFESTYLE,   "patient_id", "survey_date")
+    labels    = _read_or_empty(spark, SILVER.LABELS,      "patient_id", "snapshot_date")
+
+    # sim_arrival_date se excluye de fuentes secundarias para evitar colisión
+    # de nombre con la columna homónima de clinical (que es la canónica para
+    # la ventana de cuarentena del reassembler).
+    _audit = {"ingestion_timestamp", "source_file", "year", "month", "sim_arrival_date", "updated_at"}
 
     gait_cols = [c for c in gait.columns
                  if c not in {"patient_id", "session_id", "session_date"} | _audit]
@@ -83,42 +50,42 @@ def run(spark: SparkSession) -> None:
     lifestyle_cols = [c for c in lifestyle.columns
                       if c not in {"patient_id", "response_id", "survey_date"} | _audit]
 
-    # Labels: carry frailty_label + label_available_date (needed for anti-leakage tests).
-    # snapshot_date from labels is the join key — excluded to avoid collision with clinical.
     label_cols = [c for c in labels.columns
                   if c not in {"patient_id", "snapshot_date"} | _audit]
 
-    # gait: session_date is already DateType
-    training = _asof_join_latest(
-        clinical, gait,
-        pid_col="patient_id", base_date="snapshot_date",
-        lookup_date="session_date", feature_cols=gait_cols,
-    )
+    # Anti-leakage: la etiqueta debe haber sido confirmada DESPUÉS de la evaluación.
+    # El guard evita AnalysisException cuando labels es un DataFrame vacío sin
+    # columnas de negocio (todavía no ha llegado ninguna etiqueta).
+    if "label_available_date" in labels.columns:
+        labels_clean = labels.filter(
+            F.col("label_available_date") > F.col("snapshot_date")
+        )
+    else:
+        labels_clean = labels
 
-    # sppb: survey_date is TimestampType — cast to DateType for consistent comparison
-    sppb = sppb.withColumn("survey_date", F.to_date("survey_date"))
-    training = _asof_join_latest(
-        training, sppb,
-        pid_col="patient_id", base_date="snapshot_date",
-        lookup_date="survey_date", feature_cols=sppb_cols,
-    )
+    # Join simple por patient_id: cada paciente tiene exactamente un registro
+    # por fuente. LEFT JOIN para conservar pacientes con encuestas aún pendientes.
+    training = clinical
 
-    # lifestyle: same cast
-    lifestyle = lifestyle.withColumn("survey_date", F.to_date("survey_date"))
-    training = _asof_join_latest(
-        training, lifestyle,
-        pid_col="patient_id", base_date="snapshot_date",
-        lookup_date="survey_date", feature_cols=lifestyle_cols,
+    training = training.join(
+        gait.select("patient_id", *gait_cols),
+        "patient_id",
+        "left",
     )
-
-    # labels: label_available_date is already DateType in Silver.
-    # Anti-leakage condition is embedded in _asof_join_latest:
-    #   label_available_date <= snapshot_date
-    # so only confirmed diagnoses are joined (never a future label).
-    training = _asof_join_latest(
-        training, labels,
-        pid_col="patient_id", base_date="snapshot_date",
-        lookup_date="label_available_date", feature_cols=label_cols,
+    training = training.join(
+        sppb.select("patient_id", *sppb_cols),
+        "patient_id",
+        "left",
+    )
+    training = training.join(
+        lifestyle.select("patient_id", *lifestyle_cols),
+        "patient_id",
+        "left",
+    )
+    training = training.join(
+        labels_clean.select("patient_id", *label_cols),
+        "patient_id",
+        "left",
     )
 
     (

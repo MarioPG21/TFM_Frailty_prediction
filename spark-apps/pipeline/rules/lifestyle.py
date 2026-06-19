@@ -1,8 +1,7 @@
 def get_lifestyle_rules() -> list[dict]:
     """
-    Reglas de calidad para la Fuente B2 (encuestas de hábitos y condiciones crónicas).
-    Rangos derivados de _PA_VIG_PARAMS, _PA_MOD_PARAMS, _SED_PARAMS,
-    _DEPR_P, _HTN_P, _DIA_P y _ART_P del generador.
+    Reglas de calidad para la Fuente B2 (encuestas de estilo de vida).
+    Rangos derivados de los parámetros del generador.
     """
     return [
         # Identidad
@@ -13,34 +12,28 @@ def get_lifestyle_rules() -> list[dict]:
          "constraint": "patient_id IS NOT NULL",
          "tag": "lifestyle"},
 
-        # Actividad física — _PA_VIG_PARAMS: lo=0, hi=7 (días/semana)
-        {"name": "valid_activity_vigorous",
-         "constraint": "physical_activity_vigorous >= 0 AND physical_activity_vigorous <= 7",
+        # gauss_clamp(3000/6500, 2000, 0, 20000)
+        {"name": "valid_steps_per_day",
+         "constraint": "steps_per_day >= 0 AND steps_per_day <= 20000",
          "tag": "lifestyle"},
-        # _PA_MOD_PARAMS: lo=0, hi=7 (días/semana)
-        {"name": "valid_activity_moderate",
-         "constraint": "physical_activity_moderate >= 0 AND physical_activity_moderate <= 7",
+        # gauss_clamp(60/200, 80, 0, 600)
+        {"name": "valid_moderate_exercise",
+         "constraint": "moderate_exercise_min_week >= 0 AND moderate_exercise_min_week <= 600",
          "tag": "lifestyle"},
-        # _SED_PARAMS: min lo=1, max hi=18 (horas/día)
-        {"name": "valid_sedentary",
-         "constraint": "sedentary_hours_day >= 1.0 AND sedentary_hours_day <= 18.0",
+        # gauss_clamp(0.7/1.0, 0.2, 0.3, 2.0)
+        {"name": "valid_protein_intake",
+         "constraint": "protein_intake_g_per_kg >= 0.3 AND protein_intake_g_per_kg <= 2.0",
          "tag": "lifestyle"},
-
-        # Condiciones crónicas — bernoulli(p) ∈ {0, 1}
-        {"name": "valid_depression_flag",
-         "constraint": "depression IN (0, 1)",
+        # gauss_clamp(2/5, 2, 0, 10)
+        {"name": "valid_social_contacts",
+         "constraint": "social_contacts_per_week >= 0 AND social_contacts_per_week <= 10",
          "tag": "lifestyle"},
-        {"name": "valid_hypertension_flag",
-         "constraint": "hypertension IN (0, 1)",
+        # weighted_choice([0, 1, 2])
+        {"name": "valid_tobacco_use",
+         "constraint": "tobacco_use IN (0, 1, 2)",
          "tag": "lifestyle"},
-        {"name": "valid_diabetes_flag",
-         "constraint": "diabetes IN (0, 1)",
-         "tag": "lifestyle"},
-        {"name": "valid_arthritis_flag",
-         "constraint": "arthritis IN (0, 1)",
-         "tag": "lifestyle"},
-        # htn + dia + art + extra(0-2): máximo = 1+1+1+2 = 5
-        {"name": "valid_num_chronic",
-         "constraint": "num_chronic_conditions >= 0 AND num_chronic_conditions <= 5",
+        # weighted_choice([0, 1, 2, 3])
+        {"name": "valid_alcohol_units",
+         "constraint": "alcohol_units_per_week IN (0, 1, 2, 3)",
          "tag": "lifestyle"},
     ]

@@ -1,8 +1,7 @@
 def get_sppb_rules() -> list[dict]:
     """
-    Reglas de calidad para la Fuente B1 (encuestas SPPB y miedo a caídas).
-    Rangos derivados de _SPPB_BALANCE, _SPPB_GAIT, _SPPB_CHAIR,
-    _FES_PARAMS y _FALLS_PROBS del generador.
+    Reglas de calidad para la Fuente B1 (encuestas SPPB).
+    Rangos derivados de los parámetros gauss_clamp del generador.
     """
     return [
         # Identidad
@@ -16,31 +15,20 @@ def get_sppb_rules() -> list[dict]:
          "constraint": "survey_date IS NOT NULL",
          "tag": "sppb"},
 
-        # SPPB — weighted_choice([0..4])
+        # SPPB balance — gauss_clamp(2.5/3.8, 1.0, 0, 4)
         {"name": "valid_sppb_balance",
-         "constraint": "sppb_balance >= 0 AND sppb_balance <= 4",
+         "constraint": "sppb_balance >= 0.0 AND sppb_balance <= 4.0",
          "tag": "sppb"},
-        {"name": "valid_sppb_gait_speed",
-         "constraint": "sppb_gait_speed >= 0 AND sppb_gait_speed <= 4",
+        # Velocidad de marcha (segundos brutos) — gauss_clamp(5.5/3.5, 1.5, 1, 15)
+        {"name": "valid_sppb_gait_speed_s",
+         "constraint": "sppb_gait_speed_s >= 1.0 AND sppb_gait_speed_s <= 15.0",
          "tag": "sppb"},
-        {"name": "valid_sppb_chair_stand",
-         "constraint": "sppb_chair_stand >= 0 AND sppb_chair_stand <= 4",
+        # Tiempo levantarse (segundos brutos) — gauss_clamp(16/11, 4, 5, 60)
+        {"name": "valid_sppb_chair_stand_s",
+         "constraint": "sppb_chair_stand_s >= 5.0 AND sppb_chair_stand_s <= 60.0",
          "tag": "sppb"},
+        # Puntuación total SPPB (0-12)
         {"name": "valid_sppb_total",
          "constraint": "sppb_total >= 0 AND sppb_total <= 12",
-         "tag": "sppb"},
-        # Invariante aritmético: el generador calcula sppb_total = bal + gait + chair
-        {"name": "sppb_total_consistent",
-         "constraint": "sppb_total = sppb_balance + sppb_gait_speed + sppb_chair_stand",
-         "tag": "sppb"},
-
-        # FES-I — _FES_PARAMS: min lo=7, max hi=28
-        {"name": "valid_fes_i",
-         "constraint": "fes_i_score >= 7.0 AND fes_i_score <= 28.0",
-         "tag": "sppb"},
-
-        # Caídas — bernoulli(p) ∈ {0, 1}
-        {"name": "valid_falls",
-         "constraint": "falls_last_year IN (0, 1)",
          "tag": "sppb"},
     ]

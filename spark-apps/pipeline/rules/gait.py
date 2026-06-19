@@ -1,12 +1,7 @@
 def get_gait_rules() -> list[dict]:
     """
     Reglas de calidad para la Fuente C (eventos de zancada).
-    Rangos derivados de _STRIDE_DUR_BASE, _STRIDE_LEN_BASE, _SWING_PROP,
-    _FOOT_CLEAR_BASE, _TOE_OFF_BASE, _HEEL_STRIKE_BASE y _LATERAL_BASE.
-
-    Se toman los límites más amplios entre todos los estados para que ningún
-    dato válido sea rechazado. Los ángulos admiten valores negativos:
-    toe_off llega a -25° (robusto), heel_strike baja hasta -10° (frágil).
+    Rangos derivados de los parámetros gauss_clamp del generador.
     """
     return [
         # Identidad
@@ -23,42 +18,28 @@ def get_gait_rules() -> list[dict]:
          "constraint": "session_timestamp IS NOT NULL",
          "tag": "gait"},
 
-        # Marcha — límites más amplios entre los tres estados
-        # _STRIDE_DUR_BASE: min lo=0.85, max hi=2.50
-        {"name": "valid_stride_duration",
-         "constraint": "stride_duration_s >= 0.85 AND stride_duration_s <= 2.50",
-         "tag": "gait"},
-        # _STRIDE_LEN_BASE: min lo=0.20, max hi=1.45
+        # Marcha — gauss_clamp(0.55/0.70, 0.08, 0.2, 1.2)
         {"name": "valid_stride_length",
-         "constraint": "stride_length_m >= 0.20 AND stride_length_m <= 1.45",
+         "constraint": "stride_length_m >= 0.2 AND stride_length_m <= 1.2",
          "tag": "gait"},
-        # _SWING_PROP × dur: mín=0.85×0.32=0.272, máx=2.50×0.44=1.10
-        {"name": "valid_swing_time",
-         "constraint": "swing_time_s >= 0.27 AND swing_time_s <= 1.10",
+        # gauss_clamp(1.3/0.95, 0.15, 0.5, 2.5)
+        {"name": "valid_stride_time",
+         "constraint": "stride_time_s >= 0.5 AND stride_time_s <= 2.5",
          "tag": "gait"},
-        # dur − swing: mín=0.85×(1−0.44)=0.476, máx=2.50×(1−0.24)=1.90
-        {"name": "valid_stance_time",
-         "constraint": "stance_time_s >= 0.48 AND stance_time_s <= 1.90",
+        # gauss_clamp(85/105, 15, 40, 150)
+        {"name": "valid_cadence",
+         "constraint": "cadence_steps_min >= 40.0 AND cadence_steps_min <= 150.0",
          "tag": "gait"},
-        # _FOOT_CLEAR_BASE: min lo=0.01, max hi=0.18
-        {"name": "valid_foot_clearance",
-         "constraint": "foot_clearance_m >= 0.01 AND foot_clearance_m <= 0.18",
+        # gauss_clamp(0.6/1.1, 0.25, 0.1, 2.0)
+        {"name": "valid_gait_speed",
+         "constraint": "gait_speed_m_s >= 0.1 AND gait_speed_m_s <= 2.0",
          "tag": "gait"},
-        # _TOE_OFF_BASE: min lo=-25, max hi=5
-        {"name": "valid_toe_off_angle",
-         "constraint": "toe_off_angle_deg >= -25.0 AND toe_off_angle_deg <= 5.0",
+        # gauss_clamp(0.12/0.05, 0.04, 0.0, 0.5)
+        {"name": "valid_asymmetry_index",
+         "constraint": "asymmetry_index >= 0.0 AND asymmetry_index <= 0.5",
          "tag": "gait"},
-        # _HEEL_STRIKE_BASE: min lo=-10, max hi=18
-        {"name": "valid_heel_strike_angle",
-         "constraint": "heel_strike_angle_deg >= -10.0 AND heel_strike_angle_deg <= 18.0",
-         "tag": "gait"},
-        # _LATERAL_BASE: min lo=0.01, max hi=0.20
-        {"name": "valid_lateral_excursion",
-         "constraint": "lateral_excursion_m >= 0.01 AND lateral_excursion_m <= 0.20",
-         "tag": "gait"},
-
-        # Consistencia: stance = round(dur − swing, 4) → diferencia por redondeo ≈ 0
-        {"name": "stride_time_consistent",
-         "constraint": "ABS(stance_time_s + swing_time_s - stride_duration_s) < 0.001",
+        # gauss_clamp(28/20, 5, 10, 60)
+        {"name": "valid_double_support_pct",
+         "constraint": "double_support_pct >= 10.0 AND double_support_pct <= 60.0",
          "tag": "gait"},
     ]

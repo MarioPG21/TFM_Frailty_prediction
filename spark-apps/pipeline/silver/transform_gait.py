@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pyspark.sql.functions as F
 from pyspark.sql import SparkSession
-from pyspark.sql.types import DoubleType, IntegerType, TimestampType
+from pyspark.sql.types import DoubleType, TimestampType
 
 from pipeline.config import BRONZE, SILVER
 from pipeline.rules import get_rules
@@ -13,12 +13,10 @@ def run(spark: SparkSession) -> None:
     df = spark.read.format("delta").load(BRONZE.GAIT)
 
     metric_cols = [
-        "stride_duration_s", "stride_length_m", "swing_time_s", "stance_time_s",
-        "foot_clearance_m", "toe_off_angle_deg", "heel_strike_angle_deg",
-        "lateral_excursion_m",
+        "stride_length_m", "stride_time_s", "cadence_steps_min",
+        "gait_speed_m_s", "asymmetry_index", "double_support_pct",
     ]
     df = df.withColumn("session_timestamp", F.col("session_timestamp").cast(TimestampType()))
-    df = df.withColumn("stride_index", F.col("stride_index").cast(IntegerType()))
     for col in metric_cols:
         df = df.withColumn(col, F.col(col).cast(DoubleType()))
 

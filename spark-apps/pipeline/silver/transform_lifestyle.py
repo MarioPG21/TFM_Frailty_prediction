@@ -20,15 +20,13 @@ def run(spark: SparkSession) -> None:
 
     df = (
         df
-        .withColumn("survey_date",                 F.col("survey_date").cast(TimestampType()))
-        .withColumn("sedentary_hours_day",          F.col("sedentary_hours_day").cast(DoubleType()))
-        .withColumn("depression",                   F.col("depression").cast(IntegerType()))
-        .withColumn("hypertension",                 F.col("hypertension").cast(IntegerType()))
-        .withColumn("diabetes",                     F.col("diabetes").cast(IntegerType()))
-        .withColumn("arthritis",                    F.col("arthritis").cast(IntegerType()))
-        .withColumn("num_chronic_conditions",       F.col("num_chronic_conditions").cast(IntegerType()))
-        .withColumn("physical_activity_vigorous",   F.col("physical_activity_vigorous").cast(IntegerType()))
-        .withColumn("physical_activity_moderate",   F.col("physical_activity_moderate").cast(IntegerType()))
+        .withColumn("survey_date",                   F.col("survey_date").cast(TimestampType()))
+        .withColumn("steps_per_day",                 F.col("steps_per_day").cast(IntegerType()))
+        .withColumn("moderate_exercise_min_week",    F.col("moderate_exercise_min_week").cast(IntegerType()))
+        .withColumn("protein_intake_g_per_kg",       F.col("protein_intake_g_per_kg").cast(DoubleType()))
+        .withColumn("social_contacts_per_week",      F.col("social_contacts_per_week").cast(IntegerType()))
+        .withColumn("tobacco_use",                   F.col("tobacco_use").cast(IntegerType()))
+        .withColumn("alcohol_units_per_week",        F.col("alcohol_units_per_week").cast(IntegerType()))
     )
 
     rules = get_rules("lifestyle")

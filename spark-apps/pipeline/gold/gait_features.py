@@ -7,7 +7,13 @@ from pipeline.config import GOLD, SILVER
 
 
 def run(spark: SparkSession) -> None:
-    df = spark.read.format("delta").load(SILVER.GAIT)
+    try:
+        df = spark.read.format("delta").load(SILVER.GAIT)
+    except Exception as e:
+        if "PATH_NOT_FOUND" in str(e) or "does not exist" in str(e).lower():
+            print("[gait_features] Silver.GAIT sin datos todavía, omitiendo.")
+            return
+        raise
 
     features = (
         df.groupBy(
@@ -16,23 +22,16 @@ def run(spark: SparkSession) -> None:
             F.to_date("session_timestamp").alias("session_date"),
         )
         .agg(
-            F.mean(F.col("stride_length_m") / F.col("stride_duration_s"))
-             .alias("gait_velocity_ms"),
+            F.mean("gait_speed_m_s").alias("gait_velocity_ms"),
             F.mean("stride_length_m").alias("stride_length_m"),
-            F.mean("stride_duration_s").alias("stride_time_s"),
-            (F.lit(60.0) / F.mean("stride_duration_s")).alias("cadence_strides_min"),
-            (F.mean(F.col("swing_time_s") / F.col("stride_duration_s")) * 100)
-             .alias("swing_time_pct"),
-            F.mean("foot_clearance_m").alias("foot_clearance_m"),
-            F.mean("toe_off_angle_deg").alias("toe_off_angle_deg"),
-            F.mean("heel_strike_angle_deg").alias("heel_strike_angle_deg"),
-            F.mean("lateral_excursion_m").alias("lateral_excursion_m"),
-            (F.stddev("stride_duration_s") / F.mean("stride_duration_s"))
+            F.mean("stride_time_s").alias("stride_time_s"),
+            F.mean("cadence_steps_min").alias("cadence_steps_min"),
+            F.mean("asymmetry_index").alias("asymmetry_index"),
+            F.mean("double_support_pct").alias("double_support_pct"),
+            (F.stddev("stride_time_s") / F.mean("stride_time_s"))
              .alias("stride_time_cv"),
             F.count("*").alias("n_strides"),
         )
-        .withColumn("stance_time_pct", F.lit(100.0) - F.col("swing_time_pct"))
-        .withColumn("step_speed_ms",   F.col("stride_length_m") / F.col("stride_time_s"))
     )
 
     (

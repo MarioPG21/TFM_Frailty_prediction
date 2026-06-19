@@ -116,6 +116,22 @@ x-airflow-common:
     MLFLOW_EXPERIMENT_NAME: "${MLFLOW_EXPERIMENT_NAME}"
     MINIO_BUCKET_LANDING: "${MINIO_BUCKET_LANDING}"
 
+    # ── Pipeline config (configurable sin tocar código) ────────────────────
+    # Velocidad de llegada de datos sintéticos al sistema (pacientes/min).
+    PATIENTS_PER_MINUTE: "${PATIENTS_PER_MINUTE:-10}"
+    # Total de pacientes generados.
+    TOTAL_PATIENTS: "${TOTAL_PATIENTS:-100000}"
+    # Minutos de tiempo simulado que procesa cada tick de Bronze.
+    INGEST_WINDOW_MINUTES: "${INGEST_WINDOW_MINUTES:-60}"
+    # Días de pipeline (sim_arrival_date) antes de enviar a cuarentena.
+    ASSEMBLY_WAIT_DAYS: "${ASSEMBLY_WAIT_DAYS:-3}"
+    # Nuevos pacientes etiquetados que disparan un retrain.
+    RETRAIN_THRESHOLD: "${RETRAIN_THRESHOLD:-5000}"
+    # Schedules cron de los DAGs.
+    SCHEDULE_INGEST: "${SCHEDULE_INGEST:-*/2 * * * *}"
+    SCHEDULE_REASSEMBLE: "${SCHEDULE_REASSEMBLE:-*/10 * * * *}"
+    SCHEDULE_TRAIN_CHECK: "${SCHEDULE_TRAIN_CHECK:-*/5 * * * *}"
+
     # _PIP_ADDITIONAL_REQUIREMENTS deliberadamente ausente.
     # En el compose de referencia esta variable instalaba pyspark y providers
     # en cada arranque de cada contenedor Airflow (15-20 min por arranque).
@@ -250,6 +266,10 @@ services:
       SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
       SPARK_CONF_spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
       SPARK_CONF_spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+      INGEST_WINDOW_MINUTES: "${INGEST_WINDOW_MINUTES:-60}"
+      ASSEMBLY_WAIT_DAYS: "${ASSEMBLY_WAIT_DAYS:-3}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
     ports:
       - "8080:8080"   # Spark Master UI
       - "7077:7077"   # Puerto de conexión del cluster
@@ -279,7 +299,7 @@ services:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_MEMORY: "${SPARK_WORKER_MEMORY:-2G}"
-      SPARK_WORKER_CORES: "${SPARK_WORKER_CORES:-2}"
+      SPARK_WORKER_CORES: "${SPARK_WORKER_CORES:-4}"
       SPARK_WORKER_PORT: "8081"
       SPARK_WORKER_WEBUI_PORT: "8081"
       PYSPARK_PYTHON: python3.11
@@ -290,6 +310,10 @@ services:
       SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
       SPARK_CONF_spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
       SPARK_CONF_spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+      INGEST_WINDOW_MINUTES: "${INGEST_WINDOW_MINUTES:-60}"
+      ASSEMBLY_WAIT_DAYS: "${ASSEMBLY_WAIT_DAYS:-3}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
     ports:
       - "8081:8081"   # Spark Worker 1 UI
     volumes:
@@ -321,7 +345,7 @@ services:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
       SPARK_WORKER_MEMORY: "${SPARK_WORKER_MEMORY:-2G}"
-      SPARK_WORKER_CORES: "${SPARK_WORKER_CORES:-2}"
+      SPARK_WORKER_CORES: "${SPARK_WORKER_CORES:-4}"
       SPARK_WORKER_PORT: "8082"
       SPARK_WORKER_WEBUI_PORT: "8082"
       PYSPARK_PYTHON: python3.11
@@ -332,6 +356,10 @@ services:
       SPARK_CONF_spark.hadoop.fs.s3a.path.style.access: "true"
       SPARK_CONF_spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
       SPARK_CONF_spark.hadoop.fs.s3a.impl: org.apache.hadoop.fs.s3a.S3AFileSystem
+      INGEST_WINDOW_MINUTES: "${INGEST_WINDOW_MINUTES:-60}"
+      ASSEMBLY_WAIT_DAYS: "${ASSEMBLY_WAIT_DAYS:-3}"
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
     ports:
       - "8082:8082"   # Spark Worker 2 UI
     volumes:

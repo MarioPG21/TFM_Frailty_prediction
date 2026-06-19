@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pyspark.sql.functions as F
 from pyspark.sql import SparkSession
-from pyspark.sql.types import DateType, IntegerType, TimestampType
+from pyspark.sql.types import DateType, DoubleType, IntegerType, TimestampType
 
 from pipeline.config import BRONZE, SILVER
 from pipeline.rules import get_rules
@@ -14,13 +14,21 @@ def run(spark: SparkSession) -> None:
 
     df = (
         df
-        .withColumn("snapshot_date",      F.col("snapshot_date").cast(DateType()))
-        .withColumn("updated_at",         F.col("updated_at").cast(TimestampType()))
-        .withColumn("fried_weight_loss",  F.col("fried_weight_loss").cast(IntegerType()))
-        .withColumn("fried_weakness",     F.col("fried_weakness").cast(IntegerType()))
-        .withColumn("fried_slowness",     F.col("fried_slowness").cast(IntegerType()))
-        .withColumn("fried_low_activity", F.col("fried_low_activity").cast(IntegerType()))
-        .withColumn("fried_exhaustion",   F.col("fried_exhaustion").cast(IntegerType()))
+        .withColumn("snapshot_date",               F.col("snapshot_date").cast(DateType()))
+        .withColumn("updated_at",                  F.col("updated_at").cast(TimestampType()))
+        .withColumn("age",                         F.col("age").cast(IntegerType()))
+        .withColumn("bmi",                         F.col("bmi").cast(DoubleType()))
+        .withColumn("systolic_bp",                 F.col("systolic_bp").cast(IntegerType()))
+        .withColumn("diastolic_bp",                F.col("diastolic_bp").cast(IntegerType()))
+        .withColumn("gfr",                         F.col("gfr").cast(DoubleType()))
+        .withColumn("albumin",                     F.col("albumin").cast(DoubleType()))
+        .withColumn("hemoglobin",                  F.col("hemoglobin").cast(DoubleType()))
+        .withColumn("comorbidity_index",           F.col("comorbidity_index").cast(IntegerType()))
+        .withColumn("polypharmacy",                F.col("polypharmacy").cast(IntegerType()))
+        .withColumn("falls_last_12m",              F.col("falls_last_12m").cast(IntegerType()))
+        .withColumn("hospitalizations_last_12m",   F.col("hospitalizations_last_12m").cast(IntegerType()))
+        .withColumn("mmse_score",                  F.col("mmse_score").cast(IntegerType()))
+        .withColumn("depression_score",            F.col("depression_score").cast(DoubleType()))
     )
 
     rules = get_rules("clinical")

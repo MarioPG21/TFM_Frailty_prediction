@@ -57,8 +57,11 @@ class SILVER:
 # Rutas de capa Gold
 # ---------------------------------------------------------------------------
 class GOLD:
-    GAIT_FEATURES = _s3(_GOLD, "gait_features")
-    TRAINING      = _s3(_GOLD, "training")
+    GAIT_FEATURES        = _s3(_GOLD, "gait_features")
+    TRAINING             = _s3(_GOLD, "training")
+    ASSEMBLED            = _s3(_GOLD, "assembled")
+    INFERENCE_QUARANTINE = _s3(_GOLD, "inference_quarantine")
+    PREDICTIONS          = _s3(_GOLD, "predictions")
 
 
 # ---------------------------------------------------------------------------
@@ -73,17 +76,25 @@ DEDUP_KEYS: dict[str, list[str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Columna de fecha principal por fuente (usada para el watermark y el
-# particionado por year/month)
+# Columna de watermark por fuente (pipeline-time; minute precision).
+# Usada en Bronze para filtrar por ventana fija y avanzar el watermark.
+# Separada de las fechas de evaluación (snapshot_date, label_available_date)
+# que se usan para la lógica de negocio (splits temporales, anti-leakage).
 # ---------------------------------------------------------------------------
 DATE_COLS: dict[str, str] = {
-    "clinical":  "snapshot_date",
-    "sppb":      "survey_date",
-    "lifestyle": "survey_date",
-    "gait":      "session_timestamp",
-    # Labels use label_available_date: governs when the record "arrives" (anti-leakage)
-    "labels":    "label_available_date",
+    "clinical":  "updated_at",         # pipeline arrival ts (minute precision)
+    "sppb":      "survey_date",        # idem (0-30 min lag vs clinical)
+    "lifestyle": "survey_date",        # idem
+    "gait":      "session_timestamp",  # idem
+    "labels":    "updated_at",         # pipeline arrival ts (191-822 min lag)
 }
+
+# ---------------------------------------------------------------------------
+# Ventana de ingesta Bronze (minutos simulados por tick).
+# Configurable vía env var; valor por defecto 60.
+# ---------------------------------------------------------------------------
+import os as _os
+INGEST_WINDOW_MINUTES: int = int(_os.getenv("INGEST_WINDOW_MINUTES", "60"))
 
 # ---------------------------------------------------------------------------
 # Datos sintéticos — ruta base dentro de los contenedores

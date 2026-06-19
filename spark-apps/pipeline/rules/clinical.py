@@ -1,8 +1,7 @@
 def get_clinical_rules() -> list[dict]:
     """
     Reglas de calidad para la Fuente A (registros clínicos).
-    Rangos derivados de los parámetros gauss_clamp del generador:
-    límites más amplios entre los tres estados (robusto/prefrágil/frágil).
+    Rangos derivados de los parámetros gauss_clamp del generador.
     """
     return [
         # Identidad
@@ -14,73 +13,68 @@ def get_clinical_rules() -> list[dict]:
          "tag": "clinical"},
 
         # Demografía
-        # _AGE_PARAMS:    min lo=65, max hi=95
         {"name": "valid_age",
-         "constraint": "age >= 65 AND age <= 95",
+         "constraint": "age >= 65 AND age <= 100",
          "tag": "clinical"},
-        # weighted_choice(["M","F"])
         {"name": "valid_sex",
          "constraint": "sex IN ('M', 'F')",
          "tag": "clinical"},
-        # _HEIGHT_PARAMS: lo=145, hi=190
-        {"name": "valid_height",
-         "constraint": "height_cm >= 145 AND height_cm <= 190",
-         "tag": "clinical"},
-        # _WEIGHT_PARAMS: min lo=40, max hi=105; _vary respeta límites
-        {"name": "valid_weight",
-         "constraint": "weight_kg >= 40 AND weight_kg <= 105",
-         "tag": "clinical"},
-        # Derivado: weight/height²; mín=40/1.90²≈11.08, máx=105/1.45²≈49.94
+        # gauss_clamp(27/25, 4, 17, 45)
         {"name": "valid_bmi",
-         "constraint": "bmi >= 11.0 AND bmi <= 50.0",
+         "constraint": "bmi >= 17.0 AND bmi <= 45.0",
          "tag": "clinical"},
 
-        # Clínica
-        # _HR_PARAMS:   min lo=50, max hi=100
-        {"name": "valid_heart_rate",
-         "constraint": "heart_rate_bpm >= 50 AND heart_rate_bpm <= 100",
+        # Clínica cardiovascular
+        # gauss_clamp(140/130, 18, 90, 200)
+        {"name": "valid_systolic_bp",
+         "constraint": "systolic_bp >= 90 AND systolic_bp <= 200",
          "tag": "clinical"},
-        # _TUG_PARAMS:  lo=5, hi=60
-        {"name": "valid_tug",
-         "constraint": "tug_time_s >= 5 AND tug_time_s <= 60",
-         "tag": "clinical"},
-        # _GRIP_PARAMS: lo=5, hi=50
-        {"name": "valid_grip",
-         "constraint": "grip_strength_kg >= 5 AND grip_strength_kg <= 50",
-         "tag": "clinical"},
-        # _MMSE_PARAMS: lo=10, hi=30
-        {"name": "valid_mmse",
-         "constraint": "mmse >= 10 AND mmse <= 30",
-         "tag": "clinical"},
-        # _GDS_PARAMS:  lo=1, hi=7
-        {"name": "valid_gds",
-         "constraint": "gds >= 1.0 AND gds <= 7.0",
-         "tag": "clinical"},
-        # _FI_PARAMS:   lo=0.0, hi=0.70
-        {"name": "valid_frailty_index",
-         "constraint": "frailty_index_fi >= 0.0 AND frailty_index_fi <= 0.70",
+        # gauss_clamp(80, 10, 55, 120)
+        {"name": "valid_diastolic_bp",
+         "constraint": "diastolic_bp >= 55 AND diastolic_bp <= 120",
          "tag": "clinical"},
 
-        # Criterios de Fried — bernoulli(p) ∈ {0, 1}
-        {"name": "valid_fried_weight_loss",
-         "constraint": "fried_weight_loss IN (0, 1)",
+        # Laboratorio
+        # gauss_clamp(55/72, 18, 15, 120)
+        {"name": "valid_gfr",
+         "constraint": "gfr >= 15.0 AND gfr <= 120.0",
          "tag": "clinical"},
-        {"name": "valid_fried_weakness",
-         "constraint": "fried_weakness IN (0, 1)",
+        # gauss_clamp(3.5/4.0, 0.5, 2.0, 5.5)
+        {"name": "valid_albumin",
+         "constraint": "albumin >= 2.0 AND albumin <= 5.5",
          "tag": "clinical"},
-        {"name": "valid_fried_slowness",
-         "constraint": "fried_slowness IN (0, 1)",
-         "tag": "clinical"},
-        {"name": "valid_fried_low_activity",
-         "constraint": "fried_low_activity IN (0, 1)",
-         "tag": "clinical"},
-        {"name": "valid_fried_exhaustion",
-         "constraint": "fried_exhaustion IN (0, 1)",
+        # gauss_clamp(12.5/14.0, 1.5, 8.0, 18.0)
+        {"name": "valid_hemoglobin",
+         "constraint": "hemoglobin >= 8.0 AND hemoglobin <= 18.0",
          "tag": "clinical"},
 
-        # Consistencia: bmi = round(weight / (height/100)², 2)
-        # El error máximo de redondeo con 2 decimales es < 0.005, se usa 0.01 de margen.
-        {"name": "bmi_consistent",
-         "constraint": "ABS(bmi - weight_kg / POW(height_cm / 100.0, 2)) < 0.01",
+        # Comorbilidad y fármacos
+        # max(0, gauss_clamp(3/1, 1.5, 0, 10))
+        {"name": "valid_comorbidity_index",
+         "constraint": "comorbidity_index >= 0 AND comorbidity_index <= 10",
+         "tag": "clinical"},
+        # max(0, gauss_clamp(5/2, 2, 0, 15))
+        {"name": "valid_polypharmacy",
+         "constraint": "polypharmacy >= 0 AND polypharmacy <= 15",
+         "tag": "clinical"},
+
+        # Eventos
+        # 0 si no frágil; randint(1,4) si frágil
+        {"name": "valid_falls_last_12m",
+         "constraint": "falls_last_12m >= 0 AND falls_last_12m <= 4",
+         "tag": "clinical"},
+        # 0 si no frágil; randint(0,3) si frágil
+        {"name": "valid_hospitalizations",
+         "constraint": "hospitalizations_last_12m >= 0 AND hospitalizations_last_12m <= 3",
+         "tag": "clinical"},
+
+        # Cognitivo y estado de ánimo
+        # gauss_clamp(22/27, 4, 0, 30)
+        {"name": "valid_mmse_score",
+         "constraint": "mmse_score >= 0 AND mmse_score <= 30",
+         "tag": "clinical"},
+        # uniform(0.3,1.0) si frágil; uniform(0.0,0.4) si no
+        {"name": "valid_depression_score",
+         "constraint": "depression_score >= 0.0 AND depression_score <= 1.0",
          "tag": "clinical"},
     ]

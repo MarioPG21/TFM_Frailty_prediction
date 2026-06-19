@@ -55,7 +55,9 @@ class TestBronzeClinical:
     def test_audit_columns_not_null(self, spark):
         df = spark.read.format("delta").load(BRONZE.CLINICAL)
         nulls = df.filter(
-            F.col("ingestion_timestamp").isNull() | F.col("source_file").isNull()
+            F.col("ingestion_timestamp").isNull()
+            | F.col("source_file").isNull()
+            | F.col("sim_arrival_date").isNull()
         ).count()
         assert nulls == 0, f"{nulls} filas con columnas de auditoría nulas"
 
@@ -84,7 +86,9 @@ class TestBronzeSppb:
     def test_audit_columns_not_null(self, spark):
         df = spark.read.format("delta").load(BRONZE.SPPB)
         nulls = df.filter(
-            F.col("ingestion_timestamp").isNull() | F.col("source_file").isNull()
+            F.col("ingestion_timestamp").isNull()
+            | F.col("source_file").isNull()
+            | F.col("sim_arrival_date").isNull()
         ).count()
         assert nulls == 0
 
@@ -100,7 +104,9 @@ class TestBronzeGait:
     def test_audit_columns_not_null(self, spark):
         df = spark.read.format("delta").load(BRONZE.GAIT)
         nulls = df.filter(
-            F.col("ingestion_timestamp").isNull() | F.col("source_file").isNull()
+            F.col("ingestion_timestamp").isNull()
+            | F.col("source_file").isNull()
+            | F.col("sim_arrival_date").isNull()
         ).count()
         assert nulls == 0
 
@@ -127,7 +133,9 @@ class TestBronzeLabels:
     def test_audit_columns_not_null(self, spark):
         df = spark.read.format("delta").load(BRONZE.LABELS)
         nulls = df.filter(
-            F.col("ingestion_timestamp").isNull() | F.col("source_file").isNull()
+            F.col("ingestion_timestamp").isNull()
+            | F.col("source_file").isNull()
+            | F.col("sim_arrival_date").isNull()
         ).count()
         assert nulls == 0
 
@@ -135,12 +143,16 @@ class TestBronzeLabels:
         wm = read_watermark(spark, "labels")
         assert wm is not None, "El watermark de labels no fue escrito"
 
-    def test_rows_match_clinical(self, spark):
+    def test_labels_subset_of_clinical(self, spark):
+        """En el nuevo paradigma, labels es un subconjunto de clinical:
+        cada label corresponde a un paciente clínico, pero puede haber clínicos
+        recientes sin label aún (datos clínicos llegan 0-2 días tras evaluación,
+        labels llegan 7-30 días después)."""
         n_labels   = _count(spark, BRONZE.LABELS)
         n_clinical = _count(spark, BRONZE.CLINICAL)
-        assert n_labels == n_clinical, (
-            f"bronze_labels ({n_labels}) ≠ bronze_clinical ({n_clinical}): "
-            "debe haber un label por cada snapshot clínico"
+        assert n_labels <= n_clinical, (
+            f"bronze_labels ({n_labels}) > bronze_clinical ({n_clinical}): "
+            "no puede haber más labels que pacientes clínicos"
         )
 
     def test_idempotent(self, spark):
