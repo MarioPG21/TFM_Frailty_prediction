@@ -19,7 +19,7 @@ from pipeline_config import SCHEDULE_INGEST
 _SUBMIT = (
     "$SPARK_HOME/bin/spark-submit"
     " --master spark://spark-master:7077"
-    " --conf spark.cores.max=1"
+    " --conf spark.cores.max=2"
     " --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension"
     " --conf spark.sql.catalog.spark_catalog="
     "org.apache.spark.sql.delta.catalog.DeltaCatalog"

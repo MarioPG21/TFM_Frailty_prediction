@@ -12,6 +12,9 @@ Diseño:
   (fecha en que el lote llegó al sistema), NO a snapshot_date (fecha de
   evaluación). Esto evita que lotes con fechas de evaluación adelantadas
   desplacen el cutoff y manden a cuarentena pacientes aún dentro de plazo.
+- Rescate de cuarentena: en cada tick se eliminan de GOLD.INFERENCE_QUARANTINE
+  los pacientes que ya tienen las 4 fuentes (sus datos llegaron tarde pero
+  están ahora completos).
 """
 from __future__ import annotations
 
@@ -51,6 +54,7 @@ def _merge_or_append(spark: SparkSession, df: DataFrame, path: str) -> None:
         (
             dt.alias("existing")
             .merge(df.alias("new"), "existing.patient_id = new.patient_id")
+            .whenMatchedUpdateAll()
             .whenNotMatchedInsertAll()
             .execute()
         )
@@ -166,6 +170,30 @@ def _handle_quarantine(
         print(f"[reassembler] Cuarentena de inferencia: {n_new:,} pacientes nuevos")
 
 
+def _rescue_from_quarantine(spark: SparkSession, pids_complete: DataFrame) -> None:
+    """
+    Elimina de GOLD.INFERENCE_QUARANTINE los pacientes que ahora tienen las 4
+    fuentes completas: sus datos llegaron con retraso pero ya están disponibles.
+    Usa whenMatchedDelete() — sin collect(), escala a 1M pacientes.
+    """
+    if not DeltaTable.isDeltaTable(spark, GOLD.INFERENCE_QUARANTINE):
+        return
+
+    q_df = spark.read.format("delta").load(GOLD.INFERENCE_QUARANTINE)
+    n_to_rescue = q_df.join(pids_complete, "patient_id", "inner").count()
+    if n_to_rescue == 0:
+        return
+
+    (
+        DeltaTable.forPath(spark, GOLD.INFERENCE_QUARANTINE)
+        .alias("q")
+        .merge(pids_complete.alias("c"), "q.patient_id = c.patient_id")
+        .whenMatchedDelete()
+        .execute()
+    )
+    print(f"[reassembler] Cuarentena: {n_to_rescue:,} pacientes rescatados (datos ya completos)")
+
+
 def run(spark: SparkSession) -> None:
     """
     Por cada tick del pipeline:
@@ -173,7 +201,8 @@ def run(spark: SparkSession) -> None:
     2. Determina qué pacientes tienen las 4 fuentes presentes.
     3. Excluye los ya ensamblados (idempotencia).
     4. Escribe nuevos completos a GOLD.ASSEMBLED.
-    5. Detecta incompletos fuera de ventana → GOLD.INFERENCE_QUARANTINE.
+    5. Rescata de GOLD.INFERENCE_QUARANTINE los ahora completos.
+    6. Detecta incompletos fuera de ventana → GOLD.INFERENCE_QUARANTINE.
     """
     try:
         clinical = spark.read.format("delta").load(SILVER.CLINICAL)
@@ -192,29 +221,34 @@ def run(spark: SparkSession) -> None:
     pids_sppb      = sppb.select("patient_id").distinct()
     pids_lifestyle = lifestyle.select("patient_id").distinct()
 
-    # Pacientes con las 4 fuentes presentes
-    pids_complete = (
+    # Pacientes con las 4 fuentes presentes (antes de filtrar ya-ensamblados,
+    # necesario para el rescate de cuarentena)
+    pids_complete_all = (
         pids_clinical
         .join(pids_gait,      "patient_id", "inner")
         .join(pids_sppb,      "patient_id", "inner")
         .join(pids_lifestyle, "patient_id", "inner")
     )
 
-    # Excluir los ya ensamblados
+    # Excluir los ya ensamblados para no duplicar
+    pids_to_assemble = pids_complete_all
     if DeltaTable.isDeltaTable(spark, GOLD.ASSEMBLED):
         already = (
             spark.read.format("delta").load(GOLD.ASSEMBLED)
             .select("patient_id")
         )
-        pids_complete = pids_complete.join(already, "patient_id", "left_anti")
+        pids_to_assemble = pids_complete_all.join(already, "patient_id", "left_anti")
 
-    n_new = pids_complete.count()
+    n_new = pids_to_assemble.count()
     if n_new > 0:
-        assembled = _assemble(spark, pids_complete, clinical, gait, sppb, lifestyle)
+        assembled = _assemble(spark, pids_to_assemble, clinical, gait, sppb, lifestyle)
         _merge_or_append(spark, assembled, GOLD.ASSEMBLED)
         print(f"[reassembler] Ensamblados: {n_new:,} pacientes nuevos")
     else:
         print("[reassembler] Sin pacientes nuevos completos en este tick")
+
+    # Purgar cuarentena: los que ahora tienen las 4 fuentes ya no necesitan esperar
+    _rescue_from_quarantine(spark, pids_complete_all)
 
     _handle_quarantine(spark, clinical, pids_gait, pids_sppb, pids_lifestyle)
 

@@ -94,7 +94,11 @@ DATE_COLS: dict[str, str] = {
 # Configurable vía env var; valor por defecto 60.
 # ---------------------------------------------------------------------------
 import os as _os
-INGEST_WINDOW_MINUTES: int = int(_os.getenv("INGEST_WINDOW_MINUTES", "60"))
+INGEST_WINDOW_MINUTES: int      = int(_os.getenv("INGEST_WINDOW_MINUTES",      "60"))
+# Gait tiene 20 strides/paciente (20× más filas que otras fuentes).
+# Con ventana doble y 2 cores cubre el mismo pipeline-time en la mitad de ticks.
+INGEST_WINDOW_MINUTES_GAIT: int = int(_os.getenv("INGEST_WINDOW_MINUTES_GAIT",
+                                                   str(INGEST_WINDOW_MINUTES * 2)))
 
 # ---------------------------------------------------------------------------
 # Datos sintéticos — ruta base dentro de los contenedores

@@ -57,7 +57,8 @@ def _ingest_batch(
     source: str,
     landing_path: str,
     bronze_path: str,
-    file_format: str,   # "csv" o "json"
+    file_format: str,        # "csv" o "json"
+    window_minutes: int = INGEST_WINDOW_MINUTES,
 ) -> None:
     date_col = DATE_COLS[source]
     wm_str   = read_watermark(spark, source)
@@ -65,7 +66,7 @@ def _ingest_batch(
     # ── Calcular ventana ──────────────────────────────────────────────────────
     if wm_str:
         window_start = datetime.strptime(wm_str[:19], _TS_FMT)
-        window_end   = window_start + timedelta(minutes=INGEST_WINDOW_MINUTES)
+        window_end   = window_start + timedelta(minutes=window_minutes)
     else:
         window_start = None  # primera ejecución: no filtra por inicio
         window_end   = None  # primera ejecución: recoge todo hasta el primer watermark
